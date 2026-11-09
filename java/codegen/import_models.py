@@ -5,8 +5,8 @@ The models are generated, then normalised:
 
 * ``@javax.annotation.*`` annotations are dropped so the SDK does not need jsr305 or
   javax.annotation-api on the classpath.
-* The per-model ``JsonNullable`` helpers are dropped: the contract models no ``nullable`` fields,
-  so those helpers are dead code that would otherwise drag in jackson-databind.
+* The unused Jackson ``JsonNullable`` helpers are dropped. Gson models retain boxed nullable
+  fields, preserving JSON null without adding a Jackson dependency.
 
 Everything else is left exactly as generated. Running this script is safe and idempotent; the
 result is committed so SDK consumers never need a JDK-based generator.
@@ -20,17 +20,15 @@ from __future__ import annotations
 import argparse
 import glob
 import re
-import re
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import urllib.request
+import zipfile
 
-import yaml
-
-import yaml
+import contract_yaml
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SPEC = os.path.join(REPO_ROOT, "contract", "openapi-v1.yaml")
@@ -61,11 +59,20 @@ def ensure_jar(explicit):
             raise SystemExit("generator jar not found: %s" % explicit)
         return explicit
     cached = os.path.join(CACHE_DIR, "openapi-generator-cli-%s.jar" % GENERATOR_VERSION)
-    if os.path.exists(cached) and os.path.getsize(cached) > 1_000_000:
-        return cached
+    if os.path.exists(cached) and zipfile.is_zipfile(cached):
+        with zipfile.ZipFile(cached) as archive:
+            if archive.testzip() is None:
+                return cached
     os.makedirs(CACHE_DIR, exist_ok=True)
     print("downloading generator %s ..." % GENERATOR_VERSION)
-    urllib.request.urlretrieve(GENERATOR_URL, cached)
+    partial = cached + ".part"
+    urllib.request.urlretrieve(GENERATOR_URL, partial)
+    if not zipfile.is_zipfile(partial):
+        raise SystemExit("downloaded generator is not a valid jar")
+    with zipfile.ZipFile(partial) as archive:
+        if archive.testzip() is not None:
+            raise SystemExit("downloaded generator jar is incomplete")
+    os.replace(partial, cached)
     return cached
 
 
@@ -165,19 +172,6 @@ def retarget_json_helper(path):
     return True
 
 
-def retarget_json_helper(path):
-    """Points the generated toJson/fromJson helpers at UvpJson instead of the generator's JSON."""
-    with open(path, encoding="utf-8") as handle:
-        text = handle.read()
-    if "com.uvp.openapi.JSON" not in text:
-        return False
-    updated = (text.replace("import com.uvp.openapi.JSON;", "import com.uvp.openapi.UvpJson;")
-                   .replace("JSON.getGson()", "UvpJson.getGson()"))
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(updated)
-    return True
-
-
 EMPTY_MODEL_TEMPLATE = """package com.uvp.openapi.model;
 
 /**
@@ -210,53 +204,7 @@ public class %(name)s {
 def emit_empty_models():
     """Creates classes for object schemas that declare no properties."""
     with open(SPEC, encoding="utf-8") as handle:
-        doc = yaml.safe_load(handle)
-    created = []
-    for name, schema in (doc.get("components", {}).get("schemas") or {}).items():
-        if schema.get("type") != "object" or schema.get("properties"):
-            continue
-        path = os.path.join(MODEL_DIR, name + ".java")
-        if os.path.exists(path):
-            continue
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(EMPTY_MODEL_TEMPLATE % {"name": name})
-        created.append(name)
-    return created
-
-
-EMPTY_MODEL_TEMPLATE = """package com.uvp.openapi.model;
-
-/**
- * %(name)s - the contract defines this body as an empty JSON object.
- *
- * <p>Written explicitly because the generator skips object schemas that declare no properties,
- * even when an operation references them, which would leave the API classes referring to a type
- * that does not exist.</p>
- */
-public class %(name)s {
-
-  @Override
-  public boolean equals(Object other) {
-    return other != null && getClass() == other.getClass();
-  }
-
-  @Override
-  public int hashCode() {
-    return getClass().getName().hashCode();
-  }
-
-  @Override
-  public String toString() {
-    return "%(name)s{}";
-  }
-}
-"""
-
-
-def emit_empty_models():
-    """Creates classes for object schemas that declare no properties."""
-    with open(SPEC, encoding="utf-8") as handle:
-        doc = yaml.safe_load(handle)
+        doc = contract_yaml.load(handle)
     created = []
     for name, schema in (doc.get("components", {}).get("schemas") or {}).items():
         if schema.get("type") != "object" or schema.get("properties"):
@@ -284,8 +232,9 @@ def main():
         cmd = [java, "-jar", jar, "generate",
                "-i", SPEC, "-g", "java", "-o", workdir, "--library", "okhttp-gson",
                "--global-property", "models,modelDocs=false,modelTests=false",
+               "--inline-schema-options", "SKIP_SCHEMA_REUSE=true",
                "--additional-properties",
-               "java8=true,dateLibrary=java8,useJakartaEe=false,hideGenerationTimestamp=true,"
+               "java8=true,dateLibrary=java8,useJakartaEe=false,hideGenerationTimestamp=true,openApiNullable=false,"
                "modelPackage=com.uvp.openapi.model"]
         print("generating models ...")
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -313,6 +262,11 @@ def main():
                 json_clean += 1
 
         empties = emit_empty_models()
+        for path in sorted(glob.glob(os.path.join(MODEL_DIR, "*.java"))):
+            with open(path, encoding="utf-8") as handle:
+                text = "\n".join(line.rstrip() for line in handle.read().splitlines()).rstrip() + "\n"
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(text)
 
         print("models: %d generated + %d empty-body classes" % (len(generated), len(empties)))
         print("cleanup: javax annotations in %d, JsonNullable helpers in %d, JSON helper in %d"

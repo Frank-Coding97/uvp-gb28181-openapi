@@ -7,10 +7,10 @@ UVP GB28181 平台对外开放接口（`/openapi/v1/*`）的客户端与示例�
 | Java / Spring Boot | [`java/`](java/) | 完整 SDK（签名、重试、错误映射、幂等键）+ starter + 可运行 demo |
 | Python | [`python/`](python/) | **零依赖**客户端（只用标准库）+ 示例，单文件可直接抄 |
 | Go | [`go/`](go/) | 标准库参考实现 + 示例，`go run` 就能跑 |
-| 先不写代码 | [`http/`](http/) | Postman / Apifox 集合，84 个接口全带上，签名自动算 |
+| 先不写代码 | [`http/`](http/) | Postman / Apifox 集合，106 个接口全带上，签名自动算 |
 | 任意语言 | 本文「签名规范」一节 | 自己实现只要对齐这一页，务必用 [`fixtures/`](fixtures/) 自证 |
 
-本文路径都相对本仓库根目录。
+本文路径都相对本仓库根目录。当前契约包含 106 个设备相关操作，不开放用户管理接口。查询统一使用 GET query，写入和控制统一使用 POST JSON；`deviceId`、`channelId` 等目标标识放在参数中，不拼进路径。
 
 ---
 
@@ -26,7 +26,7 @@ UVP GB28181 平台对外开放接口（`/openapi/v1/*`）的客户端与示例�
 ✅ 用后端端口 `51002`，纯 HTTP，同时绕开自签证书问题：
 
 ```
-http://<平台IP>:51002/openapi/v1/devices
+http://<平台IP>:51002/openapi/v1/device/list
 ```
 
 **2. `audience` 必须与平台配置一致**
@@ -51,7 +51,7 @@ http://<平台IP>:51002/openapi/v1/devices
 <dependency>
   <groupId>com.uvp</groupId>
   <artifactId>uvp-openapi-spring-boot-starter</artifactId>
-  <version>1.0.0</version>
+  <version>1.0.0-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -75,8 +75,8 @@ http://<平台IP>:51002/openapi/v1/devices
 从 Releases 下载 `uvp-openapi-*.jar`，装进本地仓一行命令：
 
 ```bash
-mvn install:install-file -Dfile=uvp-openapi-sdk-1.0.0.jar \
-  -DgroupId=com.uvp -DartifactId=uvp-openapi-sdk -Dversion=1.0.0 -Dpackaging=jar
+mvn install:install-file -Dfile=uvp-openapi-sdk-1.0.0-SNAPSHOT.jar \
+  -DgroupId=com.uvp -DartifactId=uvp-openapi-sdk -Dversion=1.0.0-SNAPSHOT -Dpackaging=jar
 ```
 
 **C. 源码（本仓 `java/` 目录）**
@@ -104,9 +104,10 @@ public class CameraService {
     private final UvpClient uvp;
 
     public String hlsUrl(String deviceId, String channelId) {
-        LivePlaybackResponseData data = uvp.live()
-                .startLivePlayback(deviceId, channelId).getData();
-        return (String) data.getUrls().get("hls");
+        LivePlayback data = uvp.live().startLivePlayback(
+                new ActionStartLivePlaybackRequest()
+                        .deviceId(deviceId).channelId(channelId)).getData();
+        return data.getUrls().getHls();
     }
 }
 ```
@@ -116,7 +117,7 @@ public class CameraService {
 ```java
 try (UvpClient uvp = new UvpClient(
         UvpClientConfig.of(baseUrl, accessKey, secretKey, audience))) {
-    DeviceListResponse devices = uvp.devices().listDevices(1, 50, null, "online");
+    Device device = uvp.devices().getDevice("34020000002000000001").getData();
 }
 ```
 
@@ -141,9 +142,22 @@ python3 python/demo_devices.py
 from uvp_openapi import UvpClient
 
 with UvpClient(base_url, access_key, secret_key, audience) as client:
-    page = client.get("/openapi/v1/devices", query={"page": 1, "pageSize": 20})
+    page = client.get("/openapi/v1/device/list", query={"page": 1, "pageSize": 20})
     for device in page["data"]["items"]:
         print(device["deviceId"], device["name"])
+```
+
+POST 可以直接传字典，客户端只序列化一次，并用同一份 UTF-8 字节签名和发送；`False`、`0` 和显式 `None` 会保留：
+
+```python
+result = client.post("/openapi/v1/channel/update", {
+    "deviceId": "34020000002000000001",
+    "channelId": "34020000001320000001",
+    "alias": "东门",
+    "audioEnabled": False,
+    "longitude": 0,
+    "latitude": 0,
+})
 ```
 
 只需要签名、不需要客户端时，用 `sign_request()` 拿请求头，自己发请求：
@@ -151,9 +165,14 @@ with UvpClient(base_url, access_key, secret_key, audience) as client:
 ```python
 from uvp_openapi import sign_request
 
+import json
+
+body = json.dumps({"deviceId": "34020000002000000001"},
+                  ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 headers = sign_request(access_key, secret_key, audience,
-                       "POST", "/openapi/v1/devices/{id}/catalog/refresh",
+                       "POST", "/openapi/v1/device/catalog/refresh", body=body,
                        idempotency_key="catalog-refresh-0001")
+# 使用这些 headers 发请求时，原样发送 body 字节。
 ```
 
 ---
@@ -209,6 +228,7 @@ UVP-HMAC-SHA256/1
 **Body**：参与签名的是**原始字节**。不要解析 JSON 后重新序列化——字段顺序或空格变一位，签名就不同。
 
 **自证**：`fixtures/signature-v1.json` 里有平台给出的 canonical 与签名。
+向量中的历史路径仅用于固定的密码学回归，不代表当前平台仍提供这些路径；实际调用以契约为准。
 你的实现必须原样复现，别信"跑通了就是对的"——错一行照样算得出签名，只是平台一律 401。
 
 ```bash
@@ -256,7 +276,7 @@ python3 scripts/verify-parity.py --with-java # 再加 Java
 
 ## 契约与版本
 
-- 接口契约：[`contract/openapi-v1.yaml`](contract/openapi-v1.yaml)（OpenAPI 3.0.3，84 个操作）。可以拿它自己生成其他语言客户端。
+- 接口契约：[`contract/openapi-v1.yaml`](contract/openapi-v1.yaml)（OpenAPI 3.0.3，106 个操作）。可以拿它自己生成其他语言客户端。
 - 签名向量：[`fixtures/signature-v1.json`](fixtures/signature-v1.json)，两份副本的来源与同步方式见 [`contract/SOURCE.md`](contract/SOURCE.md)。
 - 多语言一致性：`scripts/verify-parity.py`。任何一门语言的签名实现改动后都必须跑，且结果必须全绿。
 - HTTP 集合：[`http/`](http/)，由契约生成，不要手改。
@@ -276,12 +296,22 @@ python3 scripts/verify-parity.py --with-java # 再加 Java
 
 **契约变了（平台仓 `api/openapi-v1.yaml`）**：
 
+维护脚本需要 PyYAML；这不影响 Python 和 Go 客户端的零依赖运行。首次维护先准备虚拟环境：
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install 'PyYAML>=6,<7'
+```
+
+然后同步并重建交付物：
+
 ```bash
 python3 scripts/sync-contract.py                     # 把契约与向量同步到本仓
 python3 java/codegen/import_models.py                # 重建模型
 python3 java/codegen/generate_apis.py                # 重建 API 类
 python3 scripts/gen-http-collection.py               # 重建 Postman / Apifox 集合
-python3 scripts/verify-parity.py --with-java         # 三语言 + 集合 + 副本对账
+python3 scripts/verify-parity.py --with-java         # 三语言 HTTP/模型回归 + 集合 + 副本对账
 ```
 
 `sync-contract.py` 只有平台侧的人能跑（它要去平台仓取文件）。客户拿到的是已经同步好的副本，

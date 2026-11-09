@@ -27,7 +27,12 @@ ALLOWED = {
     "192.168.10.220",   # 内网 Nexus，README 里作为交付渠道给出，属于有意公开
 }
 
-SKIP_DIRS = {"target", "node_modules", ".cache", ".git", "__pycache__"}
+# RFC 5737 TEST-NET blocks are reserved for examples, never real deployment addresses.
+DOCUMENTATION_NETWORKS = tuple(ipaddress.IPv4Network(network) for network in (
+    "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24",
+))
+
+SKIP_DIRS = {".venv", "target", "node_modules", ".cache", ".git", "__pycache__"}
 SUFFIXES = {".md", ".java", ".py", ".go", ".yml", ".yaml", ".sh", ".xml", ".json", ".properties"}
 
 IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
@@ -39,6 +44,11 @@ def is_ipv4(text: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def allowed_address(address: str) -> bool:
+    return address in ALLOWED or any(ipaddress.IPv4Address(address) in network
+                                     for network in DOCUMENTATION_NETWORKS)
 
 
 def main() -> int:
@@ -57,7 +67,7 @@ def main() -> int:
             for number, line in enumerate(lines, 1):
                 for match in IPV4.finditer(line):
                     address = match.group(0)
-                    if not is_ipv4(address) or address in ALLOWED:
+                    if not is_ipv4(address) or allowed_address(address):
                         continue
                     findings.append((os.path.relpath(path, os.path.dirname(SDK_ROOT)),
                                      number, address, line.strip()[:100]))

@@ -1,12 +1,14 @@
 package com.uvp.demo;
 
 import com.uvp.openapi.client.UvpClient;
+import com.uvp.openapi.model.ActionCallPTZPresetRequest;
+import com.uvp.openapi.model.ActionDeviceRecordQueryRequest;
+import com.uvp.openapi.model.ActionStartLivePlaybackRequest;
 import com.uvp.openapi.model.ChannelListResponse;
 import com.uvp.openapi.model.DeviceListResponse;
-import com.uvp.openapi.model.DeviceRecordQueryRequest;
-import com.uvp.openapi.model.EmptyJSONRequest;
-import com.uvp.openapi.model.LivePlaybackResponseData;
-import com.uvp.openapi.model.OpenAPIDeviceRecordQueryResponse;
+import com.uvp.openapi.model.DeviceRecordQuery200Response;
+import com.uvp.openapi.model.DeviceStatusResponse;
+import com.uvp.openapi.model.LivePlayback;
 import com.uvp.openapi.model.PTZOperationResponse;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
@@ -39,16 +41,16 @@ public class DemoController {
     public DeviceListResponse devices(@RequestParam(defaultValue = "1") int page,
                                       @RequestParam(defaultValue = "20") int pageSize,
                                       @RequestParam(required = false) String keyword) {
-        return uvp.devices().listDevices(page, pageSize, keyword, null);
+        return uvp.devices().listDevices(page, pageSize, keyword, null, null, null, null, null, null, null);
     }
 
     @GetMapping("/devices/{deviceId}/channels")
     public ChannelListResponse channels(@PathVariable String deviceId) {
-        return uvp.devices().listChannels(deviceId, 1, 50, null, null);
+        return uvp.devices().listChannels(deviceId);
     }
 
     @GetMapping("/devices/{deviceId}/status")
-    public Object status(@PathVariable String deviceId) {
+    public DeviceStatusResponse status(@PathVariable String deviceId) {
         return uvp.devices().getDeviceStatus(deviceId);
     }
 
@@ -60,7 +62,8 @@ public class DemoController {
      */
     @PostMapping("/devices/{deviceId}/channels/{channelId}/live")
     public Map<String, Object> live(@PathVariable String deviceId, @PathVariable String channelId) {
-        LivePlaybackResponseData data = uvp.live().startLivePlayback(deviceId, channelId).getData();
+        LivePlayback data = uvp.live().startLivePlayback(new ActionStartLivePlaybackRequest()
+                .deviceId(deviceId).channelId(channelId)).getData();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("streamId", data.getStreamId());
         result.put("status", data.getStatus());
@@ -74,7 +77,8 @@ public class DemoController {
     public PTZOperationResponse callPreset(@PathVariable String deviceId,
                                            @PathVariable String channelId,
                                            @PathVariable String presetId) {
-        return uvp.ptz().callPTZPreset(deviceId, channelId, presetId, new EmptyJSONRequest());
+        return uvp.ptz().callPTZPreset(new ActionCallPTZPresetRequest()
+                .deviceId(deviceId).channelId(channelId).presetId(presetId));
     }
 
     /**
@@ -84,15 +88,23 @@ public class DemoController {
      * device reports, so an offset must be explicit.</p>
      */
     @GetMapping("/devices/{deviceId}/channels/{channelId}/records")
-    public OpenAPIDeviceRecordQueryResponse records(@PathVariable String deviceId,
+    public DeviceRecordQuery200Response records(@PathVariable String deviceId,
                                                     @PathVariable String channelId,
-                                                    @RequestParam String startTime,
-                                                    @RequestParam String endTime,
+                                                    @RequestParam(required = false) String startTime,
+                                                    @RequestParam(required = false) String endTime,
                                                     @RequestParam(required = false) String cursor,
                                                     @RequestParam(defaultValue = "50") int pageSize) {
-        DeviceRecordQueryRequest body = new DeviceRecordQueryRequest()
-                .startTime(OffsetDateTime.parse(startTime))
-                .endTime(OffsetDateTime.parse(endTime));
-        return uvp.playback().deviceRecordQuery(deviceId, channelId, cursor, pageSize, body);
+        ActionDeviceRecordQueryRequest body = new ActionDeviceRecordQueryRequest()
+                .deviceId(deviceId).channelId(channelId).pageSize(pageSize);
+        if (cursor != null && !cursor.isEmpty()) {
+            body.cursor(cursor);
+        } else {
+            if (startTime == null || endTime == null) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.BAD_REQUEST, "first page requires startTime and endTime");
+            }
+            body.startTime(OffsetDateTime.parse(startTime)).endTime(OffsetDateTime.parse(endTime));
+        }
+        return uvp.playback().deviceRecordQuery(body);
     }
 }

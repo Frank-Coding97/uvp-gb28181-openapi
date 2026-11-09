@@ -155,9 +155,11 @@ function makePm(options) {
   let pendingUrl = null;
 
   const pm = {
+    execution: { skipRequest: function () { if (options.onSkip) options.onSkip(); } },
     variables: {
       get: function (key) { return variables.has(key) ? variables.get(key) : undefined; },
       set: function (key, value) { variables.set(key, value); },
+      replaceIn: function (text) { return String(text).replace(/\{\{([^}]+)\}\}/g, function (match, key) { return variables.has(key) ? String(variables.get(key)) : match; }); },
     },
     request: {
       method: options.method,
@@ -200,7 +202,7 @@ function makePm(options) {
           }
         },
       },
-      body: options.body === undefined ? undefined : { mode: 'raw', raw: options.body },
+      body: options.body === undefined ? undefined : { mode: 'raw', raw: options.body, update: function (text) { this.raw = text; } },
     },
   };
 
@@ -355,11 +357,11 @@ function main() {
   {
     const handle = runScript(script, {
       method: 'POST',
-      path: '/openapi/v1/devices/34020000001320000001/ptz/move',
-      pathSegments: ['openapi', 'v1', 'devices', '34020000001320000001', 'ptz', 'move'],
+      path: '/openapi/v1/ptz/control',
+      pathSegments: ['openapi', 'v1', 'ptz', 'control'],
       query: '',
       headers: [{ key: 'Idempotency-Key', value: idemPlaceholder }],
-      body: '{"action":"stop","speed":0}',
+      body: '{"deviceId":"34020000002000000001","channelId":"34020000001320000001","action":"stop","speed":0}',
       vars: baseVars,
     }, [nonceBytes(), Buffer.from('aabbccddeeff00112233445566778899', 'hex')], 1790000000000);
 
@@ -371,11 +373,11 @@ function main() {
   {
     const handle = runScript(script, {
       method: 'POST',
-      path: '/openapi/v1/devices/34020000001320000001/ptz/move',
-      pathSegments: ['openapi', 'v1', 'devices', '34020000001320000001', 'ptz', 'move'],
+      path: '/openapi/v1/ptz/control',
+      pathSegments: ['openapi', 'v1', 'ptz', 'control'],
       query: '',
       headers: [{ key: 'Idempotency-Key', value: 'replay-test-1' }],
-      body: '{"action":"stop","speed":0}',
+      body: '{"deviceId":"34020000002000000001","channelId":"34020000001320000001","action":"stop","speed":0}',
       vars: baseVars,
     }, [nonceBytes()], 1790000000000);
 
@@ -384,8 +386,8 @@ function main() {
   {
     const handle = runScript(script, {
       method: 'GET',
-      path: '/openapi/v1/devices',
-      pathSegments: ['openapi', 'v1', 'devices'],
+      path: '/openapi/v1/device/list',
+      pathSegments: ['openapi', 'v1', 'device', 'list'],
       query: '',
       headers: [],
       vars: baseVars,
@@ -399,8 +401,8 @@ function main() {
   console.log('\n参数异常时的行为');
   const common = {
     method: 'GET',
-    path: '/openapi/v1/devices',
-    pathSegments: ['openapi', 'v1', 'devices'],
+    path: '/openapi/v1/device/list',
+    pathSegments: ['openapi', 'v1', 'device', 'list'],
     query: '',
     headers: [],
     vars: baseVars,
@@ -420,6 +422,12 @@ function main() {
   assertThrows('query 里的 + 直接报错', function () {
     runScript(script, Object.assign({}, common, { query: 'keyword=a+b' }), [nonceBytes()], 1790000000000);
   }, '+');
+  assertThrows('query 里的原始分号直接报错', function () {
+    runScript(script, Object.assign({}, common, { query: 'keyword=a;b' }), [nonceBytes()], 1790000000000);
+  }, ';');
+  assertThrows('重复 query 直接报错', function () {
+    runScript(script, Object.assign({}, common, { query: 'page=1&page=2' }), [nonceBytes()], 1790000000000);
+  }, '重复');
 
   assertThrows('路径变量没替换时报错', function () {
     runScript(script, Object.assign({}, common, { path: '/openapi/v1/devices/{{deviceId}}' }),
@@ -447,7 +455,60 @@ function main() {
   /* 4. 集合本身的自洽性 */
   console.log('\n集合自洽性');
   const requests = flatten(collection.item, []);
-  assertEqual('请求数 = 84', requests.length, 84);
+  assertEqual('请求数 = 106', requests.length, 106);
+  assertEqual('所有请求使用 GET/POST 短路径', requests.every(item => ['GET', 'POST'].includes(item.request.method) && !/[{}]/.test(item.request.url.path.join('/'))), true);
+  assertEqual('所有请求都有成功响应示例', requests.every(item => item.response.length > 0), true);
+
+  console.log('\n全部请求离线验签（不连接平台）');
+  const defaults = Object.fromEntries(collection.variable.map(variable => [variable.key, variable.value]));
+  const allVars = Object.assign({}, defaults, baseVars);
+  const errors = [];
+  requests.forEach(function (item) {
+    try {
+      const request = item.request;
+      const query = (request.url.query || []).filter(parameter => !parameter.disabled).map(parameter => encodeURIComponent(parameter.key) + '=' + encodeURIComponent(parameter.value)).join('&');
+      const handle = runScript(script, {
+        method: request.method,
+        path: '/' + request.url.path.join('/'), query: query,
+        headers: request.header, body: request.body && request.body.raw,
+        vars: allVars,
+      }, [nonceBytes()], 1790000000000);
+      const url = new URL(handle.updatedUrl());
+      const rawBody = handle.pm.request.body ? handle.pm.request.body.raw : '';
+      const wireCanonical = ['UVP-HMAC-SHA256/1', baseVars.accessKey,
+        handle.header('X-UVP-Timestamp'), handle.header('X-UVP-Nonce'), request.method,
+        url.pathname, url.search.slice(1), handle.header('Content-Type') || '',
+        crypto.createHash('sha256').update(rawBody).digest('hex'), handle.header('Idempotency-Key') || '', baseVars.audience].join('\n');
+      if (wireCanonical !== handle.canonical()) throw new Error('发送的 URL/Body 与 canonical 不一致');
+      const signature = crypto.createHmac('sha256', Buffer.from(baseVars.secretKey, 'base64url')).update(wireCanonical).digest('hex');
+      if (signature !== handle.header('X-UVP-Signature')) throw new Error('HMAC 不匹配');
+      if (/\{\{/.test(rawBody + handle.updatedUrl())) throw new Error('残留模板变量');
+    } catch (error) { errors.push(item.id + ': ' + error.message); }
+  });
+  assertEqual('106 条请求必填校验及实际发送字节验签全部通过', errors.join('\n'), '');
+
+  let skipped = 0;
+  assertThrows('设备详情缺 deviceId 在发送前拒绝', function () {
+    runScript(script, Object.assign({}, common, { path: '/openapi/v1/device/info', query: '', onSkip: function () { skipped += 1; } }), [nonceBytes()], 1790000000000);
+  }, 'deviceId');
+  assertEqual('支持 skipRequest 的客户端会取消无效请求', skipped, 1);
+  assertThrows('POST JSON 缺少 channelId 在发送前拒绝', function () {
+    runScript(script, Object.assign({}, common, { method: 'POST', path: '/openapi/v1/ptz/control', body: '{"deviceId":"34020000002000000001","action":"stop","speed":0}' }), [nonceBytes()], 1790000000000);
+  }, 'channelId');
+  assertThrows('错误设备编号在发送前拒绝', function () {
+    runScript(script, Object.assign({}, common, { path: '/openapi/v1/device/info', query: 'deviceId=123' }), [nonceBytes()], 1790000000000);
+  }, '格式');
+  assertThrows('无效枚举在发送前拒绝', function () {
+    runScript(script, Object.assign({}, common, { method: 'POST', path: '/openapi/v1/ptz/control', body: '{"deviceId":"34020000002000000001","channelId":"34020000001320000001","action":"unknown","speed":0}' }), [nonceBytes()], 1790000000000);
+  }, '允许取值');
+  assertThrows('空游标应禁用，发送前拒绝空值', function () {
+    runScript(script, Object.assign({}, common, { path: '/openapi/v1/event/list', query: 'deviceId=34020000002000000001&subscriptionId=00000000-0000-4000-8000-000000000000&cursor=' }), [nonceBytes()], 1790000000000);
+  }, '不能为空');
+  {
+    const cursor = 'opaque+/cursor=中文';
+    const handle = runScript(script, Object.assign({}, common, { path: '/openapi/v1/event/list', query: 'deviceId=34020000002000000001&subscriptionId=00000000-0000-4000-8000-000000000000&cursor={{cursor}}', vars: Object.assign({}, allVars, {cursor}) }), [nonceBytes()], 1790000000000);
+    assertEqual('游标续页保留服务器不透明值，签名时正确编码', new URL(handle.updatedUrl()).searchParams.get('cursor'), cursor);
+  }
 
   const scriptedHeaders = [];
   requests.forEach(function (item) {
@@ -500,6 +561,7 @@ function main() {
 
     let mismatched = 0;
     let apiCount = 0;
+    const nativeErrors = [];
     folders.forEach(function (folder) {
       const processors = folder.preProcessors || [];
       const custom = processors.filter(function (item) {
@@ -509,9 +571,30 @@ function main() {
         mismatched += 1;
       }
       apiCount += (folder.items || []).length;
+      (folder.items || []).forEach(function (item) {
+        const api = item.api;
+        try {
+          const handle = runScript(script, {
+            method: api.method.toUpperCase(), path: api.path,
+            query: api.parameters.query.filter(parameter => parameter.enable).map(parameter => encodeURIComponent(parameter.name) + '=' + encodeURIComponent(parameter.example)).join('&'),
+            body: api.requestBody.type === 'none' ? undefined : api.requestBody.example,
+            headers: api.commonParameters.header.filter(header => header.enable).map(header => ({key: header.name, value: header.value})),
+            vars: baseVars,
+          }, [nonceBytes()], 1790000000000);
+          const url = new URL(handle.updatedUrl());
+          const body = handle.pm.request.body ? handle.pm.request.body.raw : '';
+          const canonical = ['UVP-HMAC-SHA256/1', baseVars.accessKey,
+            handle.header('X-UVP-Timestamp'), handle.header('X-UVP-Nonce'), api.method.toUpperCase(),
+            url.pathname, url.search.slice(1), handle.header('Content-Type') || '',
+            crypto.createHash('sha256').update(body).digest('hex'), handle.header('Idempotency-Key') || '', baseVars.audience].join('\n');
+          const signature = crypto.createHmac('sha256', Buffer.from(baseVars.secretKey, 'base64url')).update(canonical).digest('hex');
+          if (canonical !== handle.canonical() || signature !== handle.header('X-UVP-Signature')) throw new Error('实际 URL/Body HMAC 不一致');
+        } catch (error) { nativeErrors.push(api.operationId + ': ' + error.message); }
+      });
     });
     assertEqual('每个分组的签名脚本都与 Postman 逐字相同', mismatched, 0);
-    assertEqual('Apifox 接口数 = 84', apiCount, 84);
+    assertEqual('Apifox 接口数 = 106', apiCount, 106);
+    assertEqual('Apifox 原生106条请求无需额外目标变量且离线验签通过', nativeErrors.join('\n'), '');
   }
 
   console.log('');

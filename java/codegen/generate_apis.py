@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the typed ``*Api`` classes from the OpenAPI contract.
 
-Why generate instead of hand-writing: the contract has 84 operations and will keep growing. The
+Why generate instead of hand-writing: the contract has 106 operations and will keep growing. The
 generated files are committed, so a consumer of the SDK never runs this script; it exists so that
 adding an operation to ``contract/openapi-v1.yaml`` is a one-command change instead of a manual edit
 that drifts.
@@ -15,13 +15,14 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import sys
 import textwrap
 
-import yaml
+import contract_yaml
 
 # 从 java/codegen 往上两层就是仓库根。拆出独立仓时这里是 3 层、SPEC 在主仓 api/ 下，
 # 改错的表现是「读不到契约」或者更糟：读到一份旧的副本，生成出来的 API 悄悄落后。
@@ -50,13 +51,14 @@ JAVA_KEYWORDS = {
 
 # Domain split. Order matters: the first matching rule wins, so put the narrow paths first.
 DOMAINS = [
-    ("PtzApi", ("ptz",)),
-    ("LiveApi", ("/live",)),
-    ("PlaybackApi", ("playback", "download", "/recordings")),
-    ("TalkApi", ("talk", "broadcast")),
-    ("AlarmApi", ("alarms", "status-events", "subscriptions", "events", "positions")),
-    ("ConfigApi", ("configs", "video-params", "config-operations", "firmware-upgrades")),
-    ("ControlApi", ("recording", "alarm-guard", "maintenance", "storage-cards")),
+    ("PtzApi", ("/ptz/",)),
+    ("LiveApi", ("/live/",)),
+    ("PlaybackApi", ("/playback/", "/download/", "/record/search", "/record/options", "/cloud/record/")),
+    ("TalkApi", ("/talk/", "/broadcast/")),
+    ("ControlApi", ("/record/start", "/record/stop", "/alarm/guard/", "/alarm/reset",
+                    "/device/reboot", "/storage/card/", "/maintenance/")),
+    ("AlarmApi", ("/alarm/", "/event/", "/subscription/", "/position/")),
+    ("ConfigApi", ("/config/", "/video/params/", "/firmware/")),
 ]
 
 CLASS_DOC = {
@@ -107,7 +109,7 @@ def safe(name):
 
 def load_operations():
     with open(SPEC, encoding="utf-8") as handle:
-        doc = yaml.safe_load(handle)
+        doc = contract_yaml.load(handle)
     parameters = doc.get("components", {}).get("parameters", {})
     models = model_names()
     ops = []
@@ -157,6 +159,9 @@ def load_operations():
                 "response_type": response_type,
             })
     resolve_inline_bodies(ops)
+    for op in ops:
+        if op["response_type"] == "Object" or op["body_type"] == "Object":
+            raise ValueError("missing generated model for %s; run import_models.py first" % op["id"])
     return ops
 
 
@@ -293,12 +298,16 @@ def render_method(op):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true", help="fail if committed API classes differ from the contract")
+    args = parser.parse_args()
     ops = load_operations()
     grouped = {}
     for op in ops:
         grouped.setdefault(domain_of(op["path"]), []).append(op)
 
     os.makedirs(OUT_DIR, exist_ok=True)
+    stale = []
     for class_name, class_ops in sorted(grouped.items()):
         methods = "\n\n".join(render_method(op) for op in class_ops)
         source = """// GENERATED FILE - DO NOT EDIT.
@@ -328,10 +337,20 @@ public final class %s {
 """ % (CLASS_DOC.get(class_name, class_name), class_name, class_name,
        textwrap.indent(methods, "    ").rstrip())
         path = os.path.join(OUT_DIR, class_name + ".java")
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(source)
-        print("wrote %-16s %2d operations" % (class_name + ".java", len(class_ops)))
-    print("total %d operations" % len(ops))
+        if args.check:
+            if not os.path.exists(path) or open(path, encoding="utf-8").read() != source:
+                stale.append(path)
+        else:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(source)
+            print("wrote %-16s %2d operations" % (class_name + ".java", len(class_ops)))
+    extra = set(model[:-5] for model in os.listdir(OUT_DIR) if model.endswith("Api.java")) - set(grouped)
+    stale.extend(sorted(extra))
+    if stale:
+        print("stale generated APIs: " + ", ".join(stale), file=sys.stderr)
+        return 1
+    print("total %d operations%s" % (len(ops), " verified" if args.check else ""))
+    return 0
 
 
 if __name__ == "__main__":

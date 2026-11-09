@@ -4,14 +4,14 @@
 
 | 文件 | 来源（平台仓库内） | SHA-256 |
 |---|---|---|
-| `contract/openapi-v1.yaml` | `api/openapi-v1.yaml` | `b0d0a5aab644ee4ab15bdaa2826cac5b1501e936b1c472f3b6d502254031c87a` |
+| `contract/openapi-v1.yaml` | `api/openapi-v1.yaml` | `531f7db6d3db8ec622c53e1094d73af137d0a9575d2ec68ff297f0edf598513a` |
 | `fixtures/signature-v1.json` | `server/app/openapi/auth/testdata/signature-v1.json` | `6ba7f337166189df97a4a2ed8188bc6b3f44380ebbb93c453e4d7546d5a1fc05` |
 
 | 项 | 值 |
 |---|---|
-| 同步时平台 commit | `85ca31ce` |
-| 同步时间 | 2026-11-09 18:46:44 |
-| 平台仓库路径 | `/Users/menglulu/code/uvp/UVP-GB28181` |
+| 同步时平台 commit | `3dabaad4` |
+| 同步时间 | 2026-11-09 23:20:17 |
+| 平台仓库路径 | `../UVP-GB28181` |
 
 重新同步：`python3 scripts/sync-contract.py`
 

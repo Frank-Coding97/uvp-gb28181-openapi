@@ -23,7 +23,7 @@ import okhttp3.OkHttpClient;
  * UvpClient client = new UvpClient(UvpClientConfig.of(
  *         "http://<平台IP>:8280", accessKey, secretKey, audience));
  *
- * DeviceListResponse devices = client.devices().listDevices(1, 50, null, "online");
+ * DeviceResponse device = client.devices().getDevice(deviceId);
  * }</pre>
  *
  * <p>Thread-safe. {@link #close()} releases the connection pool; in Spring, expose it as a bean with

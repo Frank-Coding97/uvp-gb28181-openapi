@@ -1,12 +1,12 @@
 # UVP OpenAPI Java SDK
 
-Java 客户端，封装 UVP GB28181 平台的机器对接接口（`/openapi/v1/*`）。签名、幂等键、重试、错误映射全部在 SDK 内完成，业务代码不接触这些细节。
+覆盖平台当前 106 个 `/openapi/v1/*` 接口，按业务域分为 8 组。所有接口使用短路径和明确动作：GET 参数放 query，POST 参数全部放 JSON body；设备、通道和会话标识均作为入参。
 
-- 84 个接口，按业务域分成 8 组
-- 编译目标 Java 8（Spring Boot 3 用户请用 starter 模块，需要 Java 17）
-- 运行时依赖只有 okhttp + gson + slf4j
+SDK 自动处理 AK/SK 签名、幂等键、GET 重试和错误映射。模型包含设备与通道详情、异步操作状态、媒体地址、云录像和报警详情，嵌套对象及动态 map 保留具体类型，nullable 字段保留 `null`。
 
-## 快速开始（Spring Boot）
+基础 SDK 编译目标为 Java 8；Spring Boot 3 starter 和 demo 需要 Java 17。
+
+## Spring Boot 接入
 
 ```xml
 <dependency>
@@ -19,180 +19,116 @@ Java 客户端，封装 UVP GB28181 平台的机器对接接口（`/openapi/v1/*
 ```yaml
 uvp:
   openapi:
-    base-url: http://<平台IP>:8280
+    base-url: ${UVP_BASE_URL:http://localhost:8280}
     access-key: ${UVP_ACCESS_KEY:}
     secret-key: ${UVP_SECRET_KEY:}
-    audience: uvp-dev-local        # 必须等于平台 config.yml 里的 openapi.audience
+    audience: ${UVP_AUDIENCE:} # 必须等于平台 openapi.audience
 ```
 
 ```java
-@Service
-@RequiredArgsConstructor
-public class CameraService {
+import com.uvp.openapi.client.UvpClient;
+import com.uvp.openapi.model.*;
 
-    private final UvpClient uvp;
-
-    public String openLive(String deviceId, String channelId) {
-        LivePlaybackResponseData data = uvp.live().startLivePlayback(deviceId, channelId).getData();
-        return (String) data.getUrls().get("hls");
-    }
-
-    public void gotoPreset(String deviceId, String channelId, String presetId) {
-        uvp.ptz().callPTZPreset(deviceId, channelId, presetId, new EmptyJSONRequest());
-    }
-}
+// 注入 starter 创建的 UvpClient；同一平台和 AK 复用一个实例。
+Device device = uvp.devices().getDevice(deviceId).getData();
+LivePlayback live = uvp.live().startLivePlayback(
+        new ActionStartLivePlaybackRequest().deviceId(deviceId).channelId(channelId)).getData();
+String hls = live.getUrls().getHls();
+uvp.ptz().callPTZPreset(new ActionCallPTZPresetRequest()
+        .deviceId(deviceId).channelId(channelId).presetId("1"));
 ```
 
-没有 Spring 时直接 new：
+未使用 Spring 时自行创建并关闭客户端：
 
 ```java
 try (UvpClient uvp = new UvpClient(UvpClientConfig.of(baseUrl, accessKey, secretKey, audience))) {
-    DeviceListResponse devices = uvp.devices().listDevices(1, 50, null, "online");
+    DeviceResponse response = uvp.devices().getDevice(deviceId);
 }
 ```
+
+可选筛选使用完整重载；简短重载仅保留必填参数。例如 `listDevices()` 查询默认分页，`listChannels(deviceId)` 查询设备的通道。布尔筛选的 `false` 和数字筛选的 `0` 会按原值传输，`null` 表示省略。
 
 ## API 分组
 
-| 注入字段 | 覆盖范围 |
+| 方法 | 覆盖范围 |
 |---|---|
-| `uvp.devices()` | 设备、通道、状态、存储卡 |
-| `uvp.live()` | 点播（返回播放地址，不代理媒体） |
-| `uvp.playback()` | 录像检索、回放会话、下载会话 |
-| `uvp.ptz()` | 云台方向、预置位、巡航、精确定位 |
-| `uvp.talk()` | 对讲、广播（SDP 透传，媒体面不处理） |
-| `uvp.alarms()` | 报警、状态事件、订阅、上报位置 |
-| `uvp.configs()` | 设备配置、视频参数、固件升级任务 |
-| `uvp.control()` | 录像启停、布防撤防、重启、格式化、任务轮询 |
+| `uvp.devices()` | 设备、通道、统计、编辑、状态、目录刷新、抓拍和图像库 |
+| `uvp.live()` | 实时点播启停、会话详情和列表、关键帧请求 |
+| `uvp.playback()` | 设备录像检索、回放、下载、云录像 |
+| `uvp.ptz()` | 云台、预置位、巡航、精确定位、拉框缩放 |
+| `uvp.talk()` | 对讲、广播及媒体协商 |
+| `uvp.alarms()` | 报警、事件、订阅、位置 |
+| `uvp.configs()` | 设备配置、视频参数、固件升级 |
+| `uvp.control()` | 录像启停、布撤防、重启、存储卡、维护任务 |
 
-## 错误处理
+## 录像分页
 
-所有失败都抛 `UvpApiException`，已经分类好：
+首查填写时间窗口，续页只传设备、通道、cursor 和可选 pageSize；不要把首查条件和 cursor 混在一起。
 
 ```java
-try {
-    uvp.control().channelRecordingStart(deviceId, channelId, body);
-} catch (UvpApiException e) {
-    switch (e.getKind()) {
-        case CONFLICT -> // 设备当前状态不接受该操作
-        case AUTHORIZATION -> // 没有该通道的权限，或通道不属于这个 AK
-        case TIMEOUT -> // 结果未知，用同一个 Idempotency-Key 重试
-        default -> throw e;
-    }
-    log.warn("requestId={} platformCode={}", e.getRequestId(), e.getCode());
-}
+DeviceRecordQuery200Response first = uvp.playback().deviceRecordQuery(
+        new ActionDeviceRecordQueryRequest().deviceId(deviceId).channelId(channelId)
+                .startTime(start).endTime(end).pageSize(50));
+DeviceRecordQuery200Response next = uvp.playback().deviceRecordQuery(
+        new ActionDeviceRecordQueryRequest().deviceId(deviceId).channelId(channelId)
+                .cursor(first.getData().getNextCursor()).pageSize(50));
 ```
 
-`requestId` 是平台侧唯一的排障线索，务必转发或记录。
+时间参数采用带时区的 RFC 3339；设备录像检索时间窗口最多 24 小时。SDK 传递平台数据，播放、对讲和下载媒体由调用方处理。
 
-## 幂等
+## 错误、幂等和重试
 
-标记为 `required` 的 30 个写接口会自动生成 `Idempotency-Key`。**同一个逻辑操作重试时必须复用同一个键**，否则平台会当作两次独立操作：
+失败抛出 `UvpApiException`，可读取 `getKind()`、`getHttpStatus()`、`getCode()` 和 `getRequestId()`。记录 requestId 可与平台日志对应。设备返回 SIP 200 只表示协议应答，控制命令的设备执行结果以操作状态接口为准。
+
+要求幂等的写接口自动生成 `Idempotency-Key`。结果未知时，调用方重试必须复用同一个键：
 
 ```java
 String key = UvpIdempotency.newKey();
-try {
-    UvpIdempotency.run(key, () -> uvp.control().channelRecordingStart(d, c, body));
-} catch (UvpApiException e) {
-    if (e.getKind() == UvpErrorKind.TIMEOUT) {
-        UvpIdempotency.run(key, () -> uvp.control().channelRecordingStart(d, c, body));  // 复用
-    }
-}
+ActionChannelRecordingStartRequest body = new ActionChannelRecordingStartRequest()
+        .deviceId(deviceId).channelId(channelId);
+UvpIdempotency.run(key, () -> uvp.control().channelRecordingStart(body));
+// 发生超时且决定重试时，仍使用 key 和同一份 body。
 ```
 
-## 重试策略
+GET 遇到 429、5xx 或网络错误按 `max-retries` 自动重试，每次使用新 nonce 重新签名。POST 不自动重试。点播等慢接口使用 `slow-read-timeout`，普通读取使用 `read-timeout`。
 
-| 场景 | 行为 |
-|---|---|
-| GET 遇到 429 / 5xx / 网络错误 | 自动重试，最多 `max-retries` 次（默认 2），每次换新的 nonce 重新签名 |
-| POST / PUT / DELETE | **从不自动重试**。结果未知时由调用方用同一个幂等键决定是否重放 |
-| 4xx（除 429） | 不重试，直接抛出 |
+接入地址必须能路由到后端 `/openapi/v1/`；根据实际部署设置 `base-url`。HTTPS 使用可信证书，`audience` 必须与平台配置一致，机器时钟应同步。
 
-## 常见问题
-
-**1. `PKIX path building failed`**
-
-平台绿色包用的是 nginx 自签证书，证书 SAN 里通常只有 `localhost`，不含服务器 IP。Java 会直接拒绝。三种解法：内网改用 `http://`；给平台换一张 SAN 包含 IP 的证书；或把平台证书导入 JVM 的 truststore。
-
-**2. 所有请求都返回 401，但 AK/SK 明明是对的**
-
-按出现概率排序：
-
-- `audience` 与平台 `config.yml` 里的 `openapi.audience` 不一致。这个值参与签名，不一致只会表现为 401，没有任何提示。
-- 本机时钟偏差超过 300 秒。平台不做 server-time 接口，只能靠 NTP 对齐。
-- secret key 被复制时带了空格或换行。SDK 会解码失败并给出明确异常，但如果只拷贝了前 32 个字符，签名会静默不匹配。
-
-**3. 点播接口很慢甚至超时**
-
-点播要等设备真正推流上来，属于慢接口，用的是 `slow-read-timeout`（默认 60 秒），普通接口是 15 秒。如果设备响应更慢，单独调大这个值，不要调 `read-timeout`。
-
-**4. 返回的对象字段是 null**
-
-模型严格按规范生成，`additionalProperties: false`，平台新增的字段不会被带到客户端模型里。需要透传新字段时，等规范更新后重新生成（见下）。
-
-## 重新生成
-
-规范在 `contract/openapi-v1.yaml`，改完后：
-
-```bash
-python3 java/codegen/import_models.py    # 重建模型层
-python3 java/codegen/generate_apis.py    # 重建 8 个 API 类
-```
-
-生成结果需要提交到仓库，SDK 使用者不需要有 JDK 或生成器。
-
-## 构建与测试
+## 构建、测试和生成
 
 ```bash
 cd java
-mvn test          # 签名对账 + 请求管线行为测试
-mvn install       # 产出 3 个 jar
+mvn test
+mvn package
 ```
 
-签名测试读取 `fixtures/signature-v1.json` —— 这份向量被 Java / Python / Go 三份实现共用。
-它和 `contract/openapi-v1.yaml` 都是平台仓库的副本，`scripts/verify-parity.py` 负责
-字节级对账（旁边有平台仓库时才会跑），所以副本不会静默漂移。
+测试包含共用签名向量、请求签名与错误映射，以及读取权威 YAML 后逐条调用全部 106 个方法的 MockWebServer 验证：路径、query/body、幂等头、每层响应字段、nullable 和 typed map。starter 与 demo 也纳入 reactor 测试。
 
-运行 demo：
+契约位于 `contract/openapi-v1.yaml`。生成环境需要 Python 3 + PyYAML；模型生成另需 JDK 17（首次下载固定版本 OpenAPI Generator，后续复用 `java/.cache/`）。在仓库根执行：
 
 ```bash
-export UVP_BASE_URL=http://<平台IP>:51002   # 绿色包的后端端口，不是 51000
+python3 java/codegen/import_models.py
+python3 java/codegen/generate_apis.py
+python3 java/codegen/generate_apis.py --check
+python3 -m unittest discover -s java/codegen -p 'test_*.py'
+```
+
+生成物随 SDK 发布，使用者不需要生成工具。`--check` 只校验，不修改文件。更新契约后重新生成模型与 API，并运行 Maven 测试。
+
+启动 demo：
+
+```bash
+export UVP_BASE_URL=http://localhost:8280
 export UVP_ACCESS_KEY=uvp_xxx
 export UVP_SECRET_KEY=xxx
-export UVP_AUDIENCE=uvp-xxxxxxxxxxxxxxxx   # 平台 config.yml 的 openapi.audience
-java -jar uvp-openapi-demo/target/uvp-openapi-demo-1.0.0-SNAPSHOT.jar
-
+export UVP_AUDIENCE=uvp-xxx
+java -jar java/uvp-openapi-demo/target/uvp-openapi-demo-1.0.0-SNAPSHOT.jar
 curl 'http://localhost:8088/demo/devices'
 ```
 
-⛔ **接入地址不是浏览器访问的那个地址。** 绿色包的 nginx 只转发 `/api/`、`/gb28181/`、`/public/`，
-`/openapi/v1` 不在其中，访问 `https://<host>:51000/openapi/v1/...` 拿到的是前端页面的 HTML（HTTP 200），
-看起来像"接口挂了"或"返回格式不对"。**必须用后端端口 51002（纯 HTTP）**，而且它同时绕开了自签证书问题。
-
-## 真实平台联调
-
-单元测试用 mock server，证明不了"平台真的认这个签名"。`RealPlatformIT` 直接打真实平台，
-未设置 `UVP_IT_AK` 时自动跳过，所以 `mvn test` 永远不需要网络。
+`RealPlatformIT` 保留真实平台联调入口，默认不执行。仅在准备好测试设备与对应权限后显式运行，它会发起点播、云台停止、订阅、录像、对讲及下载操作：
 
 ```bash
-cd java
-export UVP_IT_BASE_URL=http://<平台IP>:51002
-export UVP_IT_AK=uvp_xxx
-export UVP_IT_SK=xxx
-export UVP_IT_AUDIENCE=uvp-xxx
-mvn -B -pl uvp-openapi-sdk test -Dtest=RealPlatformIT
+UVP_IT_BASE_URL=http://localhost:8280 UVP_IT_AK=uvp_xxx UVP_IT_SK=xxx UVP_IT_AUDIENCE=uvp-xxx \
+  mvn -B -f java/pom.xml -pl uvp-openapi-sdk test -Dtest=RealPlatformIT
 ```
-
-它覆盖 11 条链路：设备/通道事实、点播（校验回传了可播放地址）、录像检索、回放会话、云台、报警与状态事件、
-订阅生命周期、设备配置与视频参数、录像控制、对讲、下载会话、错误映射。用例名以 `IT` 结尾，
-Maven 默认不拾取，必须像上面那样显式指定。
-
-首次联调（2026-10-22，真实海康设备）发现的问题，已在代码里对应修复或标注：
-
-| 现象 | 结论 |
-|---|---|
-| 所有带 body 的写接口 400 `INVALID_REQUEST` | **SDK 的 bug**：`Content-Type` 带了 `charset=utf-8`，平台只接受裸的 `application/json`。已修，并加了断言 |
-| 录像检索跨 25 小时必 400 | 平台限制查询窗口 ≤ 24 小时，规范里没写。SDK 不限制，调用方需自己切窗 |
-| 回放「停止」对刚创建的会话稳定 400 | **平台侧缺陷**：用独立签名脚本复现，与 SDK 无关。用例里已标注，修好后断言会翻转 |
-| 对讲创建返回 503 | 平台侧：无媒体节点接受 SDP。属设备/媒体面问题，不是签名问题 |
-| 手动录像返回 409 `CAPABILITY_NOT_SUPPORTED` | 设备能力，不是故障。SDK 正确归类为 `CONFLICT` |
-

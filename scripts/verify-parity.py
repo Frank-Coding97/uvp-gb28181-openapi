@@ -164,10 +164,18 @@ def main() -> int:
     if args.fixture_only:
         return 0 if ok else 1
 
-    python = shutil.which("python3") or sys.executable
+    python = sys.executable
     ok = run("地址体检（对外交付不许出现真实平台/内网 IP）",
              [python, os.path.join(REPO_ROOT, "scripts", "check-no-endpoints.py")]) and ok
     ok = check_http_collection_fresh(python) and ok
+    ok = run("生成器与交付规则回归",
+             [python, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"],
+             cwd=REPO_ROOT) and ok
+    ok = run("Java 生成器回归",
+             [python, "-m", "unittest", "discover", "-s", "java/codegen", "-p", "test_*.py"],
+             cwd=REPO_ROOT) and ok
+    ok = run("Java API 生成物与契约一致",
+             [python, os.path.join(REPO_ROOT, "java", "codegen", "generate_apis.py"), "--check"]) and ok
 
     node = shutil.which("node")
     if node is None:
@@ -177,14 +185,19 @@ def main() -> int:
         ok = run("Postman/Apifox 脚本验签",
                  [node, os.path.join(REPO_ROOT, "scripts", "verify-http-collection.js")]) and ok
 
-    ok = run("Python 自测", [python, os.path.join(REPO_ROOT, "python", "selftest.py")]) and ok
+    ok = run("Python 签名向量自测", [python, os.path.join(REPO_ROOT, "python", "selftest.py")]) and ok
+    ok = run("Python 动作接口 HTTP 回归",
+             [python, "-m", "unittest", "discover", "-s", "python", "-p", "test_*.py"],
+             cwd=REPO_ROOT) and ok
 
     go = shutil.which("go")
     if go is None:
         print("\n! 未找到 go，跳过 Go 自测（CI 里必须跑）", file=sys.stderr)
         ok = False
     else:
-        ok = run("Go 自测", [go, "run", "./cmd/demo", "--self-test"],
+        ok = run("Go 签名向量自测", [go, "run", "./cmd/demo", "--self-test"],
+                 cwd=os.path.join(REPO_ROOT, "go")) and ok
+        ok = run("Go 动作接口 HTTP 回归", [go, "test", "./..."],
                  cwd=os.path.join(REPO_ROOT, "go")) and ok
 
     if args.with_java:
@@ -193,9 +206,8 @@ def main() -> int:
             print("\n! 未找到 mvn，跳过 Java 单测（CI 里必须跑）", file=sys.stderr)
             ok = False
         else:
-            ok = run("Java 单测（HmacSignerTest）",
-                     [mvn, "-B", "-q", "-pl", "uvp-openapi-sdk", "test",
-                      "-Dtest=HmacSignerTest", "-DfailIfNoTests=false"],
+            ok = run("Java SDK / starter / demo 回归",
+                     [mvn, "-B", "-q", "test"],
                      cwd=os.path.join(REPO_ROOT, "java")) and ok
 
     print("\n%s" % ("✓ 全部一致" if ok else "✗ 存在不一致，见上面输出"))

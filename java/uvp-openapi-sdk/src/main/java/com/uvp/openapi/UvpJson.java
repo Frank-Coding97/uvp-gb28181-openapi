@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonDeserializer;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonSerializer;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -23,6 +24,10 @@ public final class UvpJson {
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_OFFSET_DATE_TIME;
 
     private static final Gson GSON = new GsonBuilder()
+            .registerTypeAdapter(LocalDate.class, (JsonSerializer<LocalDate>)
+                    (src, type, ctx) -> src == null ? null : new JsonPrimitive(src.toString()))
+            .registerTypeAdapter(LocalDate.class, (JsonDeserializer<LocalDate>)
+                    (json, type, ctx) -> json == null || json.isJsonNull() ? null : LocalDate.parse(json.getAsString()))
             .registerTypeAdapter(OffsetDateTime.class, (JsonSerializer<OffsetDateTime>)
                     (src, type, ctx) -> src == null ? null : new JsonPrimitive(ISO.format(src)))
             .registerTypeAdapter(OffsetDateTime.class, (JsonDeserializer<OffsetDateTime>)

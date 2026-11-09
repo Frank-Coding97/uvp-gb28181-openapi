@@ -2,7 +2,7 @@
 """从 api/openapi-v1.yaml 生成 Postman / Apifox 可直接导入的调试集合。
 
 为什么用生成而不是手写：
-    84 个接口，手写一次就会和契约漂移；而漂移的集合比没有集合更糟 ——
+    接口数量和内容由契约决定，手写一次就会和契约漂移；而漂移的集合比没有集合更糟 ——
     客户照着调，路径/参数对不上，会以为平台有问题。
 
 为什么签名要写成脚本：
@@ -22,8 +22,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
+import re
 import sys
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -64,8 +66,8 @@ IDEMPOTENCY_PLACEHOLDER = "00000000-0000-4000-8000-000000000001"
 # 全部给合法占位值，这样"点开就能发"：签名通过、能拿到真实的 404/业务错，
 # 而不是缺变量导致的 401。
 PATH_DEFAULTS = {
-    "deviceId": "34020000001320000001",
-    "channelId": "34020000001320000002",
+    "deviceId": "34020000002000000001",
+    "channelId": "34020000001320000001",
     "sessionId": "00000000-0000-4000-8000-000000000000",
     "subscriptionId": "00000000-0000-4000-8000-000000000000",
     "operationId": "00000000-0000-4000-8000-000000000000",
@@ -73,6 +75,9 @@ PATH_DEFAULTS = {
     "fileName": "snapshot.jpg",
     "trackId": "1",
     "presetId": "1",
+    "fileId": "1",
+    "alarmId": "1",
+    "cursor": "",
 }
 
 # 分组规则：顺序敏感，先匹配到的先赢；设备放最后兜底。
@@ -80,14 +85,14 @@ PATH_DEFAULTS = {
 # （踩过：设备组整个变空，21 个接口全挤进"通道"）。
 GROUP_RULES: List[Tuple[str, Tuple[str, ...]]] = [
     ("05 直播", ("/live",)),
-    ("06 录像与回放", ("recording", "playback", "download", "timeline")),
+    ("06 录像与回放", ("recording", "playback", "download", "timeline", "/record/")),
     ("07 图像与截图", ("snapshot",)),
     ("08 对讲与广播", ("talk", "broadcast")),
-    ("09 报警与布防", ("alarm", "status-events")),
-    ("04 设备配置", ("device-config", "video-params", "config-operation")),
+    ("09 报警与事件", ("alarm", "/event/", "/subscription/", "/position/")),
+    ("04 设备配置", ("/config/", "video-params", "config-operation")),
     ("03 云台 PTZ", ("/ptz",)),
-    ("02 通道", ("/channels",)),
-    ("01 设备", ("/devices",)),
+    ("02 通道", ("/channel/", "/storage/", "/query/")),
+    ("01 设备", ("/device/",)),
 ]
 
 GROUP_ORDER = [
@@ -99,7 +104,7 @@ GROUP_ORDER = [
     "06 录像与回放",
     "07 图像与截图",
     "08 对讲与广播",
-    "09 报警与布防",
+    "09 报警与事件",
 ]
 
 SCRIPT = r"""/*
@@ -123,9 +128,18 @@ SCRIPT = r"""/*
 
   /* 与生成器常量同源，构建时被替换；用来区分"占位值"和"用户手填的固定 key" */
   var IDEMPOTENCY_PLACEHOLDER = '@@IDEMPOTENCY_PLACEHOLDER@@';
+  var OPERATIONS = @@OPERATIONS@@;
 
   function fail(message) {
+    if (pm.execution && typeof pm.execution.skipRequest === 'function') pm.execution.skipRequest();
     throw new Error('[UVP 签名] ' + message);
+  }
+
+  function materialize(value) {
+    var text = String(value);
+    if (typeof pm.variables.replaceIn === 'function') text = pm.variables.replaceIn(text);
+    if (/\{\{[^}]+\}\}/.test(text)) fail('仍有未填写的变量：' + text);
+    return text;
   }
 
   function variable(name, hint) {
@@ -176,6 +190,7 @@ SCRIPT = r"""/*
     if (path.charAt(0) !== '/') {
       path = '/' + path;
     }
+    path = materialize(path);
     if (path.indexOf('{{') >= 0 || /\{[A-Za-z]/.test(path)) {
       fail('路径里还有未替换的变量（' + path + '）。请在集合变量里填好 deviceId / channelId 等值');
     }
@@ -205,8 +220,9 @@ SCRIPT = r"""/*
     if (!raw) {
       return '';
     }
+    if (raw.indexOf(';') >= 0) fail('query 里不允许原始分号 ;');
     var pairs = [];
-    var seen = {};
+    var seen = Object.create(null);
     var parts = raw.split('&');
     for (var i = 0; i < parts.length; i++) {
       var part = parts[i];
@@ -224,7 +240,7 @@ SCRIPT = r"""/*
       var value;
       try {
         key = decodeURIComponent(part.slice(0, eq));
-        value = decodeURIComponent(part.slice(eq + 1));
+        value = materialize(decodeURIComponent(part.slice(eq + 1)));
       } catch (e) {
         fail('query 里有非法的百分号编码：' + part);
       }
@@ -260,7 +276,13 @@ SCRIPT = r"""/*
       return '';
     }
     if (body.mode === 'raw') {
-      return body.raw === undefined || body.raw === null ? '' : String(body.raw);
+      var raw = body.raw === undefined || body.raw === null ? '' : String(body.raw);
+      var resolved = materialize(raw);
+      if (resolved !== raw) {
+        if (typeof body.update !== 'function') fail('客户端不能更新原始请求体，无法保证签名与发送一致');
+        body.update(resolved);
+      }
+      return resolved;
     }
     if (!body.mode) {
       return '';
@@ -278,6 +300,68 @@ SCRIPT = r"""/*
     }
   }
 
+  function validate(value, schema, label) {
+    if (value === null && schema.nullable) return;
+    var kind = schema.type;
+    if (kind === 'object') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) fail(label + ' 必须是 JSON 对象');
+      (schema.required || []).forEach(function (key) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) fail(label + ' 缺少必填参数 ' + key);
+      });
+      Object.keys(value).forEach(function (key) {
+        var child = (schema.properties || {})[key];
+        if (!child && schema.additionalProperties === false) fail(label + ' 不允许参数 ' + key);
+        if (child) validate(value[key], child, label + '.' + key);
+      });
+    } else if (kind === 'array') {
+      if (!Array.isArray(value)) fail(label + ' 必须是数组');
+      value.forEach(function (item, index) { validate(item, schema.items || {}, label + '[' + index + ']'); });
+    } else if (kind === 'string' && typeof value !== 'string') fail(label + ' 必须是字符串');
+    else if (kind === 'integer' && (typeof value !== 'number' || !isFinite(value) || Math.floor(value) !== value)) fail(label + ' 必须是整数');
+    else if (kind === 'number' && (typeof value !== 'number' || !isFinite(value))) fail(label + ' 必须是数字');
+    else if (kind === 'boolean' && typeof value !== 'boolean') fail(label + ' 必须是布尔值');
+    if (schema.enum && schema.enum.indexOf(value) < 0) fail(label + ' 不在允许取值中');
+    if (typeof value === 'string') {
+      if (schema.minLength !== undefined && value.length < schema.minLength) fail(label + ' 长度不足');
+      if (schema.maxLength !== undefined && value.length > schema.maxLength) fail(label + ' 长度超限');
+      if (schema.pattern && !(new RegExp(schema.pattern)).test(value)) fail(label + ' 格式不正确');
+    }
+    if (typeof value === 'number') {
+      if (schema.minimum !== undefined && value < schema.minimum) fail(label + ' 小于最小值');
+      if (schema.maximum !== undefined && value > schema.maximum) fail(label + ' 大于最大值');
+    }
+  }
+
+  function validateRequest(method, path, query, body) {
+    var operation = OPERATIONS[method + ' ' + path];
+    if (!operation) return; /* 历史密码学夹具不属于当前接口集合。 */
+    var values = {};
+    if (query) query.split('&').forEach(function (pair) {
+      var separator = pair.indexOf('=');
+      values[decodeURIComponent(pair.slice(0, separator))] = decodeURIComponent(pair.slice(separator + 1));
+    });
+    Object.keys(values).forEach(function (name) {
+      if (!operation.query[name]) fail('Query 不允许参数 ' + name);
+    });
+    Object.keys(operation.query).forEach(function (name) {
+      var parameter = operation.query[name];
+      if (values[name] === undefined) {
+        if (parameter.required) fail('Query 缺少必填参数 ' + name);
+        return;
+      }
+      if (values[name] === '') fail('Query 参数 ' + name + ' 不能为空；可选参数请禁用');
+      var value = values[name];
+      if (parameter.schema.type === 'integer' || parameter.schema.type === 'number') value = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value) ? Number(value) : NaN;
+      if (parameter.schema.type === 'boolean') value = value === 'true' ? true : value === 'false' ? false : value;
+      validate(value, parameter.schema, 'Query.' + name);
+    });
+    if (operation.body) {
+      var parsed;
+      try { parsed = JSON.parse(body); } catch (error) { fail('请求体必须是合法 JSON'); }
+      validate(parsed, operation.body, 'Body');
+    }
+  }
+
   /*
    * 幂等键：请求里显式填了非占位值就用（重放测试需要同一个 key），
    * 占位值 / 空值 / 模板变量则自动生成一个新的。
@@ -288,7 +372,7 @@ SCRIPT = r"""/*
     if (existing === undefined || existing === null) {
       return '';
     }
-    var text = String(existing).trim();
+    var text = materialize(existing).trim();
     if (text !== '' && text !== IDEMPOTENCY_PLACEHOLDER && text.indexOf('{{') < 0) {
       return text;
     }
@@ -310,6 +394,7 @@ SCRIPT = r"""/*
   var path = requestPath();
   var query = canonicalQuery(rawQueryString());
   var body = requestBody();
+  validateRequest(method, path, query, body);
 
   var contentType = '';
   if (method === 'GET' || method === 'HEAD') {
@@ -359,10 +444,8 @@ SCRIPT = r"""/*
       pm.request.url.update(
         String(baseUrl).replace(/\/+$/, '') + path + (query ? '?' + query : '')
       );
-    } catch (e) {
-      /* 个别客户端不接受整串更新；差异只会落在那六个字符上 */
-    }
-  }
+    } catch (e) { fail('无法更新规范请求 URL：' + e.message); }
+  } else fail('客户端不能更新请求 URL，无法保证签名与发送一致');
 
   /* 只在本次运行内可见，不写进环境文件，排障时可在控制台打印 */
   pm.variables.set('uvp_canonical', canonical);
@@ -374,11 +457,22 @@ SCRIPT = r"""/*
 # ---------------------------------------------------------------- spec helpers
 
 
+class OpenAPILoader(yaml.SafeLoader):
+    """OpenAPI 的 date/date-time 示例是 JSON 字符串，不转换为 Python 日期对象。"""
+
+
+OpenAPILoader.yaml_implicit_resolvers = {
+    key: [(tag, pattern) for tag, pattern in resolvers if tag not in {"tag:yaml.org,2002:timestamp", "tag:yaml.org,2002:bool"}]
+    for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+OpenAPILoader.add_implicit_resolver("tag:yaml.org,2002:bool", re.compile(r"^(?:true|false)$", re.IGNORECASE), list("tTfF"))
+
+
 def load_spec() -> Tuple[Dict[str, Any], str]:
     for candidate in SPEC_CANDIDATES:
         if os.path.isfile(candidate):
             with open(candidate, encoding="utf-8") as handle:
-                return yaml.safe_load(handle), candidate
+                return yaml.load(handle, Loader=OpenAPILoader), candidate
     sys.exit("找不到契约文件，试过:\n  " + "\n  ".join(SPEC_CANDIDATES))
 
 
@@ -433,12 +527,12 @@ def replace_path_params(path: str) -> str:
 
 def example_value(schema: Dict[str, Any], spec: Dict[str, Any], depth: int = 0) -> Any:
     schema = resolve(spec, schema)
+    if "example" in schema:
+        return copy.deepcopy(schema["example"])
     if "enum" in schema and schema["enum"]:
         return schema["enum"][0]
     if "default" in schema:
         return schema["default"]
-    if "example" in schema:
-        return schema["example"]
     kind = schema.get("type")
     if kind == "integer":
         return schema.get("minimum", 0)
@@ -482,15 +576,74 @@ def object_example(schema: Dict[str, Any], spec: Dict[str, Any], depth: int = 0)
 
 
 def request_body_text(spec: Dict[str, Any], op: Dict[str, Any]) -> str:
-    body = op.get("requestBody")
+    body = resolve(spec, op.get("requestBody") or {})
     if not body:
         return ""
     content = body.get("content") or {}
     media = content.get("application/json")
     if not media:
         return ""
+    value = media_examples(spec, media)[0]["value"]
+    if isinstance(value, dict):
+        value = dict(value)
+        for name in PATH_DEFAULTS:
+            if name in value and isinstance(value[name], str):
+                value[name] = "{{%s}}" % name
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def media_examples(spec: Dict[str, Any], media: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if "example" in media:
+        return [{"name": "示例", "value": copy.deepcopy(media["example"])}]
+    examples = []
+    for name, raw in (media.get("examples") or {}).items():
+        example = resolve(spec, raw)
+        if "value" in example:
+            examples.append({"name": example.get("summary", name), "value": copy.deepcopy(example["value"])})
+    if examples:
+        return examples
     schema = resolve(spec, media.get("schema") or {})
-    return json.dumps(object_example(schema, spec), ensure_ascii=False, indent=2)
+    return [{"name": "示例", "value": example_value(schema, spec)}]
+
+
+def success_examples(spec: Dict[str, Any], op: Dict[str, Any]) -> List[Dict[str, Any]]:
+    examples = []
+    for status, raw in (op.get("responses") or {}).items():
+        if not str(status).isdigit() or not 200 <= int(status) < 300:
+            continue
+        response = resolve(spec, raw)
+        for content_type, media in (response.get("content") or {}).items():
+            if content_type != "application/json":
+                continue
+            for example in media_examples(spec, media):
+                examples.append({**example, "code": int(status), "description": response.get("description", ""), "schema": media.get("schema", {})})
+    return examples
+
+
+def expanded_schema(spec: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    schema = copy.deepcopy(resolve(spec, raw))
+    if "properties" in schema:
+        schema["properties"] = {name: expanded_schema(spec, prop) for name, prop in schema["properties"].items()}
+    if "items" in schema:
+        schema["items"] = expanded_schema(spec, schema["items"])
+    return schema
+
+
+def validation_contract(spec: Dict[str, Any]) -> Dict[str, Any]:
+    result = {}
+    for item in collect_operations(spec):
+        op = item["op"]
+        query = {}
+        for raw in op.get("parameters") or []:
+            parameter = resolve(spec, raw)
+            if parameter.get("in") == "query":
+                query[parameter["name"]] = {"required": bool(parameter.get("required")), "schema": expanded_schema(spec, parameter.get("schema", {}))}
+        media = resolve(spec, op.get("requestBody") or {}).get("content", {}).get("application/json")
+        result[item["method"] + " " + item["path"]] = {
+            "query": query,
+            "body": expanded_schema(spec, media.get("schema", {})) if media else None,
+        }
+    return result
 
 
 def describe_schema(spec: Dict[str, Any], schema: Dict[str, Any], indent: str = "") -> List[str]:
@@ -535,6 +688,7 @@ def describe_operation(spec: Dict[str, Any], op: Dict[str, Any], path: str, meth
         ),
         "",
         op.get("summary", "").strip(),
+        op.get("description", "").strip(),
     ]
 
     query_lines = []
@@ -570,6 +724,8 @@ def describe_operation(spec: Dict[str, Any], op: Dict[str, Any], path: str, meth
                 lines += ["", "**请求体字段**"] + fields
             else:
                 lines += ["", "**请求体**：`{}`（空对象，但不能省略）"]
+            for example in media_examples(spec, content):
+                lines += ["", "**请求示例：%s**" % example["name"], "```json", json.dumps(example["value"], ensure_ascii=False, indent=2), "```"]
 
     lines += ["", "签名头由集合的 pre-request 脚本自动写入，不要在请求里手填。"]
     return "\n".join(line for line in lines if line is not None)
@@ -578,22 +734,32 @@ def describe_operation(spec: Dict[str, Any], op: Dict[str, Any], path: str, meth
 # ---------------------------------------------------------------- postman
 
 
-def script_text() -> str:
+def script_text(spec: Optional[Dict[str, Any]] = None) -> str:
     """占位符只在这个函数里被替换，保证生成器与脚本不会各写一份而漂移。"""
-    return SCRIPT.replace("@@IDEMPOTENCY_PLACEHOLDER@@", IDEMPOTENCY_PLACEHOLDER)
+    return SCRIPT.replace("@@IDEMPOTENCY_PLACEHOLDER@@", IDEMPOTENCY_PLACEHOLDER).replace("@@OPERATIONS@@", json.dumps(validation_contract(spec) if spec else {}, ensure_ascii=False, separators=(",", ":")))
 
 
 def postman_query(spec: Dict[str, Any], op: Dict[str, Any]) -> List[Dict[str, str]]:
-    """只把有默认值的参数预先填上：空值会被平台拒绝的参数留空反而制造 400。"""
+    """必填参数和默认分页启用；其余筛选及游标保留为禁用的可编辑项。"""
     out = []
     for ref_node in op.get("parameters") or []:
         prm = param_name(spec, ref_node)
         if prm.get("in") != "query":
             continue
         schema = resolve(spec, prm.get("schema") or {})
-        if schema.get("default") is None:
-            continue
-        out.append({"key": prm.get("name"), "value": str(schema["default"])})
+        name = prm["name"]
+        enabled = bool(prm.get("required")) or "default" in schema
+        if name in PATH_DEFAULTS:
+            value = "{{%s}}" % name
+        elif "example" in prm:
+            value = prm["example"]
+        else:
+            value = example_value(schema, spec)
+        if value is None:
+            value = ""
+        if isinstance(value, bool):
+            value = str(value).lower()
+        out.append({"key": name, "value": str(value), "disabled": not enabled, "description": prm.get("description", "")})
     return out
 
 
@@ -601,8 +767,9 @@ def postman_url(path: str, query: List[Dict[str, str]]) -> Dict[str, Any]:
     replaced = replace_path_params(path)
     segments = [seg for seg in replaced.split("/") if seg]
     raw = "{{baseUrl}}" + replaced
-    if query:
-        raw += "?" + "&".join("%s=%s" % (q["key"], q["value"]) for q in query)
+    enabled = [q for q in query if not q.get("disabled")]
+    if enabled:
+        raw += "?" + "&".join("%s=%s" % (q["key"], q["value"]) for q in enabled)
     url: Dict[str, Any] = {
         "raw": raw,
         "host": ["{{baseUrl}}"],
@@ -629,7 +796,7 @@ def build_postman(spec: Dict[str, Any], operations: List[Dict[str, Any]]) -> Dic
             request["header"].append({
                 "key": "Idempotency-Key",
                 "value": IDEMPOTENCY_PLACEHOLDER,
-                "description": "占位值，脚本会自动换成新 UUID；要测重放就把它改成固定字符串",
+                "description": "占位值，脚本会自动换成随机 32 位十六进制字符串；要测重放就把它改成固定字符串",
             })
 
         body_text = request_body_text(spec, op)
@@ -642,10 +809,19 @@ def build_postman(spec: Dict[str, Any], operations: List[Dict[str, Any]]) -> Dic
             request["header"].append({"key": "Content-Type", "value": "application/json"})
 
         name = op.get("summary", op.get("operationId", "")).strip() or item["path"]
+        responses = [{
+            "name": "%s %s" % (example["code"], example["name"]),
+            "originalRequest": copy.deepcopy(request),
+            "status": example["description"], "code": example["code"],
+            "_postman_previewlanguage": "json",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": json.dumps(example["value"], ensure_ascii=False, indent=2),
+        } for example in success_examples(spec, op)]
         groups[operation_group(item["path"])].append({
+            "id": op.get("operationId"),
             "name": name,
             "request": request,
-            "response": [],
+            "response": responses,
         })
 
     items = []
@@ -665,7 +841,7 @@ def build_postman(spec: Dict[str, Any], operations: List[Dict[str, Any]]) -> Dic
         "| `secretKey` | 创建 AK 时一次性返回的 SK（base64url，无填充） |",
         "| `audience` | 服务器 `config.yml` 的 `openapi.audience`，页面上看不到 |",
         "",
-        "另外 `deviceId` / `channelId` / `sessionId` 等路径变量给了合法占位值，",
+        "`deviceId` / `channelId` / `sessionId` 等集合变量给了合法占位值，设备和通道放在 GET Query 或 POST JSON 中，",
         "换成你自己的即可。",
         "",
         "签名由集合级 pre-request 脚本自动完成，**不需要手填任何 X-UVP-\\* 头**。",
@@ -684,7 +860,7 @@ def build_postman(spec: Dict[str, Any], operations: List[Dict[str, Any]]) -> Dic
         "item": items,
         "event": [{
             "listen": "prerequest",
-            "script": {"type": "text/javascript", "exec": script_text().split("\n")},
+            "script": {"type": "text/javascript", "exec": script_text(spec).split("\n")},
         }],
         "variable": [
             {"key": "baseUrl", "value": "http://127.0.0.1:51002"},
@@ -714,12 +890,13 @@ def build_environment() -> Dict[str, Any]:
 
 def apifox_query(spec: Dict[str, Any], op: Dict[str, Any], counter: List[int]) -> List[Dict[str, Any]]:
     out = []
+    prepared = {parameter["key"]: parameter for parameter in postman_query(spec, op)}
     for ref_node in op.get("parameters") or []:
         prm = param_name(spec, ref_node)
         if prm.get("in") != "query":
             continue
         schema = resolve(spec, prm.get("schema") or {})
-        default = schema.get("default")
+        example = prepared[prm["name"]]
         counter[0] += 1
         out.append({
             "id": "q%d" % counter[0],
@@ -727,8 +904,8 @@ def apifox_query(spec: Dict[str, Any], op: Dict[str, Any], counter: List[int]) -
             "required": bool(prm.get("required")),
             "description": prm.get("description", ""),
             "type": schema.get("type", "string"),
-            "example": "" if default is None else str(default),
-            "enable": default is not None,
+            "example": PATH_DEFAULTS.get(prm["name"], example["value"]),
+            "enable": not example["disabled"],
         })
     return out
 
@@ -761,11 +938,15 @@ def apifox_request_body(spec: Dict[str, Any], op: Dict[str, Any], counter: List[
     if not content:
         return {"type": "none", "parameters": []}
     schema = resolve(spec, content.get("schema") or {})
+    example = request_body_text(spec, op)
+    for name, value in PATH_DEFAULTS.items():
+        example = example.replace("{{%s}}" % name, value)
     counter[0] += 1
     return {
         "type": "application/json",
         "parameters": [],
         "jsonSchema": schema,
+        "example": example,
         "id": "b%d" % counter[0],
         "required": bool(body.get("required")),
     }
@@ -790,8 +971,10 @@ def build_apifox(spec: Dict[str, Any], operations: List[Dict[str, Any]]) -> Dict
                 "value": IDEMPOTENCY_PLACEHOLDER,
                 "enable": True,
                 "required": True,
-                "description": "占位值，脚本会自动换成新 UUID；要测重放就把它改成固定字符串",
+                "description": "占位值，脚本会自动换成随机 32 位十六进制字符串；要测重放就把它改成固定字符串",
             })
+        examples = success_examples(spec, op)
+        response_codes = list(dict.fromkeys(example["code"] for example in examples))
         api = {
             "id": api_id,
             "method": item["method"].lower(),
@@ -805,13 +988,19 @@ def build_apifox(spec: Dict[str, Any], operations: List[Dict[str, Any]]) -> Dict
                 "query": [], "body": [], "cookie": [], "header": header_params,
             },
             "responses": [{
-                "id": api_id * 10,
-                "name": "200",
-                "code": 200,
+                "id": api_id * 10 + index,
+                "name": str(code),
+                "code": code,
                 "contentType": "json",
-                "jsonSchema": {"type": "object"},
-            }],
-            "responseExamples": [],
+                "jsonSchema": next(example["schema"] for example in examples if example["code"] == code),
+            } for index, code in enumerate(response_codes)],
+            "responseExamples": [{
+                "id": "example-%s-%s" % (api_id, index),
+                "name": example["name"],
+                "code": example["code"],
+                "responseId": api_id * 10 + response_codes.index(example["code"]),
+                "data": json.dumps(example["value"], ensure_ascii=False, indent=2),
+            } for index, example in enumerate(examples)],
             "requestBody": apifox_request_body(spec, op, counter),
             "description": describe_operation(spec, op, item["path"], item["method"]),
             "tags": [],
@@ -849,7 +1038,7 @@ def build_apifox(spec: Dict[str, Any], operations: List[Dict[str, Any]]) -> Dict
             "identityPattern": {
                 "httpApi": {"type": "methodAndPath", "bodyType": "", "fields": []}
             },
-            "preProcessors": [{"type": "customScript", "data": script_text()}],
+            "preProcessors": [{"type": "customScript", "data": script_text(spec)}],
             "postProcessors": [{"type": "inheritProcessors", "data": {}}],
             "inheritPostProcessors": {},
             "inheritPreProcessors": {},

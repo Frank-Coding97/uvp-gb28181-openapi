@@ -206,7 +206,7 @@ def _validate_path(path: str) -> None:
     for index, char in enumerate(path):
         code = ord(char)
         if code > 0x7F or code <= 0x20 or code == 0x7F:
-            raise UvpSignatureError("path 只能是可见 ASCII，路径参数请不要传中文")
+            raise UvpSignatureError("path 只能是可见 ASCII，目标标识应放在 query 或 JSON 中")
         if char in "%\\":
             raise UvpSignatureError("path 不允许出现 %% 或反斜杠（平台会拒绝）")
         if index > 0 and char == "/" and path[index - 1] == "/":
@@ -351,7 +351,7 @@ def build_query(params: Mapping[str, Any]) -> str:
     for key, value in params.items():
         if value is None:
             continue
-        parts.append("%s=%s" % (percent_encode(str(key)), percent_encode(str(value))))
+        parts.append("%s=%s" % (percent_encode(str(key)), percent_encode(str(value).lower() if isinstance(value, bool) else str(value))))
     return "&".join(parts)
 
 
@@ -389,11 +389,16 @@ class UvpClient:
         self.close()
 
     def request(self, method: str, path: str, query: Optional[Mapping[str, Any]] = None,
-                body: Union[bytes, str, None] = None, idempotency_key: str = "",
+                body: Union[bytes, str, Mapping[str, Any], None] = None, idempotency_key: str = "",
                 timeout: Optional[float] = None) -> Any:
         raw_query = build_query(query or {})
-        body_bytes = b"" if body is None else (
-            body.encode("utf-8") if isinstance(body, str) else body)
+        if isinstance(body, Mapping):
+            # Serialize once; the exact same bytes are signed and sent.
+            body_bytes = json.dumps(body, ensure_ascii=False, allow_nan=False,
+                                    separators=(",", ":")).encode("utf-8")
+        else:
+            body_bytes = b"" if body is None else (
+                body.encode("utf-8") if isinstance(body, str) else body)
         headers = sign_request(
             self._access_key, self._secret_key, self._audience, method,
             path, raw_query, body_bytes, idempotency_key,
@@ -431,7 +436,7 @@ class UvpClient:
             timeout: Optional[float] = None) -> Any:
         return self.request("GET", path, query=query, timeout=timeout)
 
-    def post(self, path: str, body: Union[bytes, str, None] = None,
+    def post(self, path: str, body: Union[bytes, str, Mapping[str, Any], None] = None,
              idempotency_key: str = "", timeout: Optional[float] = None) -> Any:
         return self.request("POST", path, body=body,
                             idempotency_key=idempotency_key, timeout=timeout)

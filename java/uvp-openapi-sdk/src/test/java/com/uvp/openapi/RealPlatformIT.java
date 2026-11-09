@@ -8,12 +8,12 @@ import com.uvp.openapi.model.Channel;
 import com.uvp.openapi.model.ChannelListResponse;
 import com.uvp.openapi.model.Device;
 import com.uvp.openapi.model.DeviceListResponse;
-import com.uvp.openapi.model.DevicePlaybackCreateRequest;
-import com.uvp.openapi.model.DeviceRecordQueryRequest;
-import com.uvp.openapi.model.DeviceSubscriptionCreateRequest;
-import com.uvp.openapi.model.EmptyObject;
+import com.uvp.openapi.model.ActionDevicePlaybackCreateRequest;
+import com.uvp.openapi.model.ActionDeviceRecordQueryRequest;
+import com.uvp.openapi.model.ActionDeviceSubscriptionCreateRequest;
+import com.uvp.openapi.model.*;
 import com.uvp.openapi.model.LivePlaybackResponse;
-import com.uvp.openapi.model.PTZMoveRequest;
+import com.uvp.openapi.model.ActionMovePTZRequest;
 import com.uvp.openapi.model.PTZPresetListResponse;
 
 import org.junit.jupiter.api.BeforeAll;
@@ -49,7 +49,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class RealPlatformIT {
 
-    private static final EmptyObject EMPTY = new EmptyObject();
 
     private static String deviceId;
     private static String channelId;
@@ -81,14 +80,14 @@ class RealPlatformIT {
     @BeforeAll
     static void discoverDevice() {
         try (UvpClient client = client()) {
-            DeviceListResponse page = client.devices().listDevices(1, 5, null, "online");
+            DeviceListResponse page = client.devices().listDevices(1, 5, null, "online", null, null, null, null, null, null);
             assertNotNull(page.getData(), "device page");
             assertFalse(page.getData().getItems().isEmpty(),
                     "the live platform must have at least one online device");
             Device device = page.getData().getItems().get(0);
             deviceId = device.getDeviceId();
 
-            ChannelListResponse channels = client.devices().listChannels(deviceId, 1, 5, null, null);
+            ChannelListResponse channels = client.devices().listChannels(deviceId);
             assertNotNull(channels.getData(), "channel page");
             assertFalse(channels.getData().getItems().isEmpty(),
                     "device " + deviceId + " must expose a channel");
@@ -109,7 +108,7 @@ class RealPlatformIT {
             log("channel detail", client.devices().getChannel(deviceId, channelId));
             log("channel status", client.devices().getChannelStatus(deviceId, channelId));
             log("channel capabilities", client.devices().getChannelControlCapabilities(deviceId, channelId));
-            log("target track", client.devices().getTargetTrackIntent(deviceId, channelId));
+            log("target track", client.ptz().getTargetTrackIntent(deviceId, channelId));
             log("storage cards", client.control().getChannelStorageCards(deviceId, channelId));
         }
     }
@@ -118,17 +117,15 @@ class RealPlatformIT {
     @Order(2)
     void startsLivePlaybackAndGetsPlayableUrls() {
         try (UvpClient client = client()) {
-            LivePlaybackResponse response = client.live().startLivePlayback(deviceId, channelId);
+            StartLivePlayback200Response response = client.live().startLivePlayback(new ActionStartLivePlaybackRequest().deviceId(deviceId).channelId(channelId));
             assertNotNull(response.getData(), "live data");
-            Map<String, Object> urls = response.getData().getUrls();
+            LivePlaybackUrls urls = response.getData().getUrls();
             assertNotNull(urls, "live urls");
-            assertTrue(urls.containsKey("hls") || urls.containsKey("flv"),
-                    "expected at least one playback protocol, saw " + urls.keySet());
+            assertTrue(urls.getHls() != null || urls.getHttpFlv() != null,
+                    "expected at least one playback protocol, saw " + urls);
             log("live stream", response.getData().getStreamId() + " status=" + response.getData().getStatus()
-                    + " reused=" + response.getData().getReused() + " protocols=" + urls.keySet());
-            for (Map.Entry<String, Object> entry : urls.entrySet()) {
-                log("live url " + entry.getKey(), entry.getValue());
-            }
+                    + " reused=" + response.getData().getReused() + " protocols=" + urls);
+
         }
     }
 
@@ -136,12 +133,12 @@ class RealPlatformIT {
     @Order(3)
     void queriesRecordingsAndRunsAPlaybackSession() {
         try (UvpClient client = client()) {
-            DeviceRecordQueryRequest query = new DeviceRecordQueryRequest();
+            ActionDeviceRecordQueryRequest query = new ActionDeviceRecordQueryRequest().deviceId(deviceId).channelId(channelId);
             query.setStartTime(OffsetDateTime.now().minusHours(12));
             query.setEndTime(OffsetDateTime.now());
-            query.setType(DeviceRecordQueryRequest.TypeEnum.fromValue("all"));
+            query.setType(ActionDeviceRecordQueryRequest.TypeEnum.fromValue("all"));
 
-            Object listed = client.playback().deviceRecordQuery(deviceId, channelId, query);
+            Object listed = client.playback().deviceRecordQuery(query);
             log("record query", listed);
 
             String recordKey = extractField(listed, "recordKey");
@@ -151,10 +148,10 @@ class RealPlatformIT {
             }
             log("record key", recordKey);
 
-            DevicePlaybackCreateRequest create = new DevicePlaybackCreateRequest();
+            ActionDevicePlaybackCreateRequest create = new ActionDevicePlaybackCreateRequest().deviceId(deviceId).channelId(channelId);
             create.setRecordKey(recordKey);
             create.setPlayFrom(OffsetDateTime.now().minusHours(12));
-            Object session = client.playback().devicePlaybackCreate(deviceId, channelId, create);
+            Object session = client.playback().devicePlaybackCreate(create);
             log("playback create", session);
 
             String sessionId = extractField(session, "sessionId");
@@ -163,16 +160,8 @@ class RealPlatformIT {
                 return;
             }
             log("playback read", client.playback().devicePlaybackRead(deviceId, channelId, sessionId));
-            try {
-                log("playback stop", client.playback().devicePlaybackStop(deviceId, channelId, sessionId, EMPTY));
-            } catch (UvpApiException rejected) {
-                // Known platform defect, reproduced without this SDK by signing the same request by
-                // hand: stopping a playback session that was just created returns 400
-                // INVALID_REQUEST. Recorded here so a fix flips the assertion.
-                assertEquals(UvpErrorKind.INVALID_REQUEST, rejected.getKind(),
-                        "unexpected failure shape: " + rejected.getMessage());
-                log("playback stop rejected", rejected.getMessage());
-            }
+            log("playback stop", client.playback().devicePlaybackStop(new ActionDevicePlaybackStopRequest()
+                    .deviceId(deviceId).channelId(channelId).sessionId(java.util.UUID.fromString(sessionId))));
         }
     }
 
@@ -188,10 +177,10 @@ class RealPlatformIT {
             log("cruise tracks", client.ptz().listPTZCruiseTracks(deviceId, channelId));
 
             // "stop" rather than a direction: it exercises the write path without moving the camera.
-            PTZMoveRequest move = new PTZMoveRequest();
-            move.setAction(PTZMoveRequest.ActionEnum.fromValue("stop"));
+            ActionMovePTZRequest move = new ActionMovePTZRequest().deviceId(deviceId).channelId(channelId);
+            move.setAction(ActionMovePTZRequest.ActionEnum.fromValue("stop"));
             move.setSpeed(0);
-            log("ptz stop", client.ptz().movePTZ(deviceId, channelId, move));
+            log("ptz stop", client.ptz().movePTZ(move));
         }
     }
 
@@ -199,10 +188,10 @@ class RealPlatformIT {
     @Order(5)
     void readsAlarmsEventsAndPositions() {
         try (UvpClient client = client()) {
-            log("alarms", client.alarms().listDeviceAlarms(deviceId, 1, 5));
+            log("alarms", client.alarms().listDeviceAlarms(deviceId));
             log("status events", client.alarms().listDeviceStatusEvents(deviceId, null, 5));
             log("positions", client.alarms().devicePositionRead(deviceId));
-            log("position history", client.alarms().devicePositionHistoryRead(deviceId, null, 5));
+            log("position history", client.alarms().devicePositionHistoryRead(deviceId));
         }
     }
 
@@ -210,11 +199,11 @@ class RealPlatformIT {
     @Order(6)
     void runsASubscriptionLifecycle() {
         try (UvpClient client = client()) {
-            DeviceSubscriptionCreateRequest request = new DeviceSubscriptionCreateRequest();
-            request.setKind(DeviceSubscriptionCreateRequest.KindEnum.fromValue("alarm"));
+            ActionDeviceSubscriptionCreateRequest request = new ActionDeviceSubscriptionCreateRequest().deviceId(deviceId);
+            request.setKind(ActionDeviceSubscriptionCreateRequest.KindEnum.fromValue("alarm"));
             request.setExpiresSeconds(180);
 
-            Object created = client.alarms().deviceSubscriptionCreate(deviceId, request);
+            Object created = client.alarms().deviceSubscriptionCreate(request);
             log("subscription create", created);
             String id = extractField(created, "id");
             if (id == null) {
@@ -222,8 +211,8 @@ class RealPlatformIT {
                 return;
             }
             log("subscription read", client.alarms().deviceSubscriptionRead(deviceId, id));
-            log("subscription events", client.alarms().deviceEventsRead(deviceId, id, null, 5));
-            log("subscription cancel", client.alarms().deviceSubscriptionCancel(deviceId, id));
+            log("subscription events", client.alarms().deviceEventsRead(deviceId, id));
+            log("subscription cancel", client.alarms().deviceSubscriptionCancel(new ActionDeviceSubscriptionCancelRequest().deviceId(deviceId).subscriptionId(id)));
         }
     }
 
@@ -241,8 +230,8 @@ class RealPlatformIT {
     void startsAndStopsChannelRecording() {
         try (UvpClient client = client()) {
             try {
-                log("recording start", client.control().channelRecordingStart(deviceId, channelId, EMPTY));
-                log("recording stop", client.control().channelRecordingStop(deviceId, channelId, EMPTY));
+                log("recording start", client.control().channelRecordingStart(new ActionChannelRecordingStartRequest().deviceId(deviceId).channelId(channelId)));
+                log("recording stop", client.control().channelRecordingStop(new ActionChannelRecordingStopRequest().deviceId(deviceId).channelId(channelId)));
             } catch (UvpApiException refused) {
                 // A camera may not support manual recording control. That is a device answer
                 // (409 CAPABILITY_NOT_SUPPORTED), not a signing or transport failure.
@@ -259,7 +248,7 @@ class RealPlatformIT {
         try (UvpClient client = client()) {
             Object created;
             try {
-                created = client.talk().deviceTalkCreate(deviceId, channelId, EMPTY);
+                created = client.talk().deviceTalkCreate(new ActionDeviceTalkCreateRequest().deviceId(deviceId).channelId(channelId));
             } catch (UvpApiException refused) {
                 // The platform answers 503 SERVICE_UNAVAILABLE when the voice path cannot be
                 // prepared (here: no media node accepted the SDP). A domain answer, not a transport
@@ -277,7 +266,7 @@ class RealPlatformIT {
                 return;
             }
             log("talk read", client.talk().deviceTalkRead(deviceId, channelId, id));
-            log("talk end", client.talk().deviceTalkEnd(deviceId, channelId, id, EMPTY));
+            log("talk end", client.talk().deviceTalkEnd(new ActionDeviceTalkEndRequest().deviceId(deviceId).channelId(channelId).sessionId(id)));
         }
     }
 
@@ -285,11 +274,11 @@ class RealPlatformIT {
     @Order(11)
     void runsADownloadSessionLifecycle() {
         try (UvpClient client = client()) {
-            DeviceRecordQueryRequest query = new DeviceRecordQueryRequest();
+            ActionDeviceRecordQueryRequest query = new ActionDeviceRecordQueryRequest().deviceId(deviceId).channelId(channelId);
             query.setStartTime(OffsetDateTime.now().minusHours(6));
             query.setEndTime(OffsetDateTime.now());
-            query.setType(DeviceRecordQueryRequest.TypeEnum.fromValue("all"));
-            Object listed = client.playback().deviceRecordQuery(deviceId, channelId, query);
+            query.setType(ActionDeviceRecordQueryRequest.TypeEnum.fromValue("all"));
+            Object listed = client.playback().deviceRecordQuery(query);
             String recordKey = extractField(listed, "recordKey");
             String startTime = extractField(listed, "startTime");
             if (recordKey == null) {
@@ -297,13 +286,13 @@ class RealPlatformIT {
                 return;
             }
 
-            com.uvp.openapi.model.DeviceDownloadCreateRequest create =
-                    new com.uvp.openapi.model.DeviceDownloadCreateRequest();
+            com.uvp.openapi.model.ActionDeviceDownloadCreateRequest create =
+                    new com.uvp.openapi.model.ActionDeviceDownloadCreateRequest().deviceId(deviceId).channelId(channelId);
             create.setRecordKey(recordKey);
             create.setPlayFrom(OffsetDateTime.parse(startTime));
-            create.setDownloadSpeed(com.uvp.openapi.model.DeviceDownloadCreateRequest.DownloadSpeedEnum
+            create.setDownloadSpeed(com.uvp.openapi.model.ActionDeviceDownloadCreateRequest.DownloadSpeedEnum
                     .fromValue(2));
-            Object session = client.playback().deviceDownloadCreate(deviceId, channelId, create);
+            Object session = client.playback().deviceDownloadCreate(create);
             log("download create", session);
 
             String sessionId = extractField(session, "sessionId");
@@ -312,7 +301,7 @@ class RealPlatformIT {
                 return;
             }
             log("download read", client.playback().deviceDownloadRead(deviceId, channelId, sessionId));
-            log("download cancel", client.playback().deviceDownloadCancel(deviceId, channelId, sessionId));
+            log("download cancel", client.playback().deviceDownloadCancel(new ActionDeviceDownloadCancelRequest().deviceId(deviceId).channelId(channelId).sessionId(java.util.UUID.fromString(sessionId))));
         }
     }
 
@@ -322,7 +311,7 @@ class RealPlatformIT {
         try (UvpClient client = new UvpClient(config()
                 .secretKey("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").maxRetries(0).build())) {
             UvpApiException failure = assertThrows(UvpApiException.class,
-                    () -> client.devices().listDevices(1, 1, null, null));
+                    () -> client.devices().listDevices());
             assertEquals(UvpErrorKind.AUTHENTICATION, failure.getKind());
             assertEquals(401, failure.getHttpStatus());
             assertNotNull(failure.getRequestId(), "the platform request id must survive the mapping");
@@ -338,8 +327,7 @@ class RealPlatformIT {
     }
 
     /**
-     * Reads a nested field through the model's own JSON view, because the record query and voice
-     * session results are declared as free-form objects in the contract.
+     * Reads a nested field through the model's own JSON view, to share the same record discovery helper across playback and download flows.
      */
     private static String extractField(Object value, String field) {
         if (value == null) {

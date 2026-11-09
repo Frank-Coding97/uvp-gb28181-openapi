@@ -45,17 +45,17 @@ def main() -> int:
     )
 
     try:
-        page = client.get("/openapi/v1/devices",
+        page = client.get("/openapi/v1/device/list",
                           query={"page": 1, "pageSize": 20})
         print(json.dumps(page, ensure_ascii=False, indent=2)[:2000])
 
-        devices = (page.get("data") or {}).get("items") or page.get("data") or []
+        devices = (page.get("data") or {}).get("items") or []
         if not devices:
             print("\n平台里还没有设备，先接入一台再来。")
             return 0
 
-        device_id = devices[0].get("deviceId") or devices[0].get("id")
-        channels = client.get("/openapi/v1/devices/%s/channels" % device_id)
+        device_id = devices[0]["deviceId"]
+        channels = client.get("/openapi/v1/channel/list", query={"deviceId": device_id, "page": 1, "pageSize": 20})
         print("\n设备 %s 的通道：" % device_id)
         print(json.dumps(channels, ensure_ascii=False, indent=2)[:1200])
         return 0

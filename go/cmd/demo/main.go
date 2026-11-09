@@ -10,6 +10,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -67,6 +69,9 @@ func selfTest() error {
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return fmt.Errorf("解析向量失败: %w", err)
 	}
+	if len(data.Vectors) == 0 {
+		return fmt.Errorf("签名向量为空")
+	}
 
 	failures := 0
 	for _, vector := range data.Vectors {
@@ -83,11 +88,13 @@ func selfTest() error {
 		if err != nil {
 			return err
 		}
+		bodyHash := sha256.Sum256([]byte(vector.Body))
 		checks := []struct {
 			field     string
 			got, want interface{}
 		}{
 			{"canonical", produced, vector.Canonical},
+			{"bodySHA256", hex.EncodeToString(bodyHash[:]), vector.BodySHA256},
 			{"canonicalBytes", len([]byte(produced)), vector.CanonicalBytes},
 			{"signature", signature, vector.Signature},
 		}
@@ -117,7 +124,7 @@ func demo() error {
 		return err
 	}
 
-	data, err := client.Get("/openapi/v1/devices", map[string]string{"page": "1", "pageSize": "20"})
+	data, err := client.Get("/openapi/v1/device/list", map[string]string{"page": "1", "pageSize": "20"})
 	if err != nil {
 		return err
 	}
@@ -140,7 +147,9 @@ func demo() error {
 		return nil
 	}
 
-	channels, err := client.Get("/openapi/v1/devices/"+page.Items[0].DeviceID+"/channels", nil)
+	channels, err := client.Get("/openapi/v1/channel/list", map[string]string{
+		"deviceId": page.Items[0].DeviceID, "page": "1", "pageSize": "20",
+	})
 	if err != nil {
 		if apiError, ok := err.(*uvp.ApiError); ok {
 			fmt.Fprintf(os.Stderr, "查通道失败: code=%s requestId=%s message=%s\n",

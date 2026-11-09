@@ -10,7 +10,7 @@ import com.uvp.openapi.client.UvpApiException;
 import com.uvp.openapi.client.UvpClient;
 import com.uvp.openapi.client.UvpClientConfig;
 import com.uvp.openapi.client.UvpErrorKind;
-import com.uvp.openapi.model.EmptyObject;
+import com.uvp.openapi.model.ActionChannelRecordingStartRequest;
 import com.uvp.openapi.client.UvpIdempotency;
 import com.uvp.openapi.internal.HmacSigner;
 import java.util.Collections;
@@ -51,6 +51,10 @@ class ApiInvokerTest {
             bytes[i] = (byte) i;
         }
         return bytes;
+    }
+
+    private static ActionChannelRecordingStartRequest recording(String deviceId, String channelId) {
+        return new ActionChannelRecordingStartRequest().deviceId(deviceId).channelId(channelId);
     }
 
     @BeforeEach
@@ -98,12 +102,12 @@ class ApiInvokerTest {
                 .setBody("{\"code\":\"OK\",\"message\":\"success\",\"requestId\":\"r1\","
                         + "\"data\":{\"items\":[],\"page\":1,\"pageSize\":20,\"total\":0}}"));
 
-        DeviceListResponse response = client.devices().listDevices(1, 20, "摄像头 A", "online");
+        DeviceListResponse response = client.devices().listDevices(1, 20, "摄像头 A", "online", null, null, null, null, null, null);
 
         RecordedRequest request = server.takeRequest();
         assertEquals("GET", request.getMethod());
         // Built from the encoder rather than a literal so a Chinese keyword cannot be mis-typed.
-        assertEquals("/openapi/v1/devices?page=1&pageSize=20&keyword="
+        assertEquals("/openapi/v1/device/list?page=1&pageSize=20&keyword="
                         + HmacSigner.rfc3986Encode("摄像头 A") + "&status=online",
                 request.getPath());
         assertEquals("1", request.getHeader("X-UVP-Sign-Version"));
@@ -121,7 +125,7 @@ class ApiInvokerTest {
                 .setBody("{\"code\":\"OK\",\"message\":\"success\",\"requestId\":\"r2\",\"data\":{}}"));
 
         UvpIdempotency.run("pinned-key-123",
-                () -> client.control().channelRecordingStart("34020000001320000001", "34020000001320000002", new EmptyObject()));
+                () -> client.control().channelRecordingStart(recording("34020000001320000001", "34020000001320000002")));
 
         RecordedRequest request = server.takeRequest();
         assertEquals("pinned-key-123", request.getHeader("Idempotency-Key"));
@@ -143,14 +147,40 @@ class ApiInvokerTest {
                 .setHeader("Content-Type", "application/json")
                 .setBody("{\"code\":\"OK\",\"message\":\"success\",\"requestId\":\"r4\",\"data\":{}}"));
 
-        client.control().channelRecordingStart("d", "c", new EmptyObject());
-        client.control().channelRecordingStart("d", "c", new EmptyObject());
+        client.control().channelRecordingStart(recording("d", "c"));
+        client.control().channelRecordingStart(recording("d", "c"));
 
         String first = server.takeRequest().getHeader("Idempotency-Key");
         String second = server.takeRequest().getHeader("Idempotency-Key");
         assertNotNull(first);
         assertNotNull(second);
         assertNotEquals(first, second, "each logical write must get its own key");
+    }
+
+    @Test
+    void recordContinuationKeepsCursorInJsonAndOmitsFirstPageFilters() throws Exception {
+        server.enqueue(new MockResponse().setHeader("Content-Type", "application/json")
+                .setBody("{\"code\":\"OK\",\"message\":\"success\",\"data\":{}}"));
+        client.playback().deviceRecordQuery(new com.uvp.openapi.model.ActionDeviceRecordQueryRequest()
+                .deviceId("d").channelId("c").cursor("opaque+/cursor=").pageSize(50));
+        RecordedRequest request = server.takeRequest();
+        assertEquals("POST", request.getMethod());
+        assertEquals("/openapi/v1/record/search", request.getPath());
+        com.google.gson.JsonObject body = com.google.gson.JsonParser.parseString(request.getBody().readUtf8()).getAsJsonObject();
+        assertEquals("opaque+/cursor=", body.get("cursor").getAsString());
+        assertEquals(50, body.get("pageSize").getAsInt());
+        assertEquals(4, body.size(), "continuation contains only target, cursor and page size");
+        assertTrue(!body.has("startTime") && !body.has("endTime") && !body.has("type"));
+    }
+
+    @Test
+    void statusRetainsUnknownNullInsteadOfTurningItIntoFalse() throws Exception {
+        server.enqueue(new MockResponse().setHeader("Content-Type", "application/json")
+                .setBody("{\"code\":\"OK\",\"message\":\"success\",\"data\":{"
+                        + "\"deviceId\":\"d\",\"status\":\"unknown\",\"online\":null,\"registerTime\":null}}"));
+        com.uvp.openapi.model.DeviceStatus status = client.devices().getDeviceStatus("d").getData();
+        org.junit.jupiter.api.Assertions.assertNull(status.getOnline());
+        org.junit.jupiter.api.Assertions.assertNull(status.getRegisterTime());
     }
 
     @Test
@@ -162,7 +192,7 @@ class ApiInvokerTest {
                 .setBody("{\"code\":\"OK\",\"message\":\"success\",\"requestId\":\"r6\","
                         + "\"data\":{\"items\":[],\"page\":1,\"pageSize\":20,\"total\":0}}"));
 
-        DeviceListResponse response = client.devices().listDevices(1, 20, null, null);
+        DeviceListResponse response = client.devices().listDevices();
 
         RecordedRequest first = server.takeRequest();
         RecordedRequest second = server.takeRequest();
@@ -178,7 +208,7 @@ class ApiInvokerTest {
                 + "\"message\":\"busy\",\"requestId\":\"r7\"}"));
 
         UvpApiException failure = assertThrows(UvpApiException.class,
-                () -> client.control().channelRecordingStart("d", "c", new EmptyObject()));
+                () -> client.control().channelRecordingStart(recording("d", "c")));
 
         assertEquals(UvpErrorKind.SERVER, failure.getKind());
         assertEquals(503, failure.getHttpStatus());
@@ -233,7 +263,7 @@ class ApiInvokerTest {
         server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE));
 
         UvpApiException failure = assertThrows(UvpApiException.class,
-                () -> client.control().channelRecordingStart("d", "c", new EmptyObject()));
+                () -> client.control().channelRecordingStart(recording("d", "c")));
 
         assertEquals(UvpErrorKind.TIMEOUT, failure.getKind());
         assertTrue(failure.getMessage().contains("Idempotency-Key"),
@@ -246,7 +276,7 @@ class ApiInvokerTest {
         server.shutdown();
 
         UvpApiException failure = assertThrows(UvpApiException.class,
-                () -> client.control().channelRecordingStart("d", "c", new EmptyObject()));
+                () -> client.control().channelRecordingStart(recording("d", "c")));
 
         assertEquals(UvpErrorKind.NETWORK, failure.getKind());
         assertEquals(0, failure.getHttpStatus());

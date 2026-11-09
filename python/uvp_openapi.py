@@ -16,7 +16,7 @@
 * Body 参与签名的是**原始字节**，不要解析后重新序列化。
 
 自测：
-    python3 sdk/python/selftest.py
+    python3 python/selftest.py
 """
 
 from __future__ import annotations

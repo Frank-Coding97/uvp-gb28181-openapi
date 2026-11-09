@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Generate the typed ``*Api`` classes from the OpenAPI contract.
 
-Why generate instead of hand-writing: the contract has 69 operations and will keep growing. The
+Why generate instead of hand-writing: the contract has 84 operations and will keep growing. The
 generated files are committed, so a consumer of the SDK never runs this script; it exists so that
-adding an operation to ``api/openapi-v1.yaml`` is a one-command change instead of a manual edit that
-drifts.
+adding an operation to ``contract/openapi-v1.yaml`` is a one-command change instead of a manual edit
+that drifts.
 
 What this script deliberately does NOT generate: the five signature headers. Those are injected by
 ``ApiInvoker``, so no public method ever takes a signature argument.
 
 Usage:
-    python3 sdk/java/codegen/generate_apis.py
+    python3 java/codegen/generate_apis.py
 """
 
 from __future__ import annotations
@@ -23,13 +23,15 @@ import textwrap
 
 import yaml
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-SPEC = os.path.join(REPO_ROOT, "api", "openapi-v1.yaml")
+# 从 java/codegen 往上两层就是仓库根。拆出独立仓时这里是 3 层、SPEC 在主仓 api/ 下，
+# 改错的表现是「读不到契约」或者更糟：读到一份旧的副本，生成出来的 API 悄悄落后。
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+SPEC = os.path.join(REPO_ROOT, "contract", "openapi-v1.yaml")
 OUT_DIR = os.path.join(
-    REPO_ROOT, "sdk", "java", "uvp-openapi-sdk", "src", "main", "java", "com", "uvp", "openapi", "api"
+    REPO_ROOT, "java", "uvp-openapi-sdk", "src", "main", "java", "com", "uvp", "openapi", "api"
 )
 MODEL_DIR = os.path.join(
-    REPO_ROOT, "sdk", "java", "uvp-openapi-sdk", "src", "main", "java", "com", "uvp", "openapi", "model"
+    REPO_ROOT, "java", "uvp-openapi-sdk", "src", "main", "java", "com", "uvp", "openapi", "model"
 )
 
 SIGNATURE_PARAMS = {"SignVersion", "AccessKey", "Timestamp", "Nonce", "Signature", "IdempotencyKey"}
@@ -300,7 +302,7 @@ def main():
     for class_name, class_ops in sorted(grouped.items()):
         methods = "\n\n".join(render_method(op) for op in class_ops)
         source = """// GENERATED FILE - DO NOT EDIT.
-// Source: api/openapi-v1.yaml via sdk/java/codegen/generate_apis.py
+// Source: contract/openapi-v1.yaml via java/codegen/generate_apis.py
 package com.uvp.openapi.api;
 
 import com.uvp.openapi.internal.ApiInvoker;

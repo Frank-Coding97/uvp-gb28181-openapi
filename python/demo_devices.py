@@ -15,7 +15,7 @@
     export UVP_ACCESS_KEY=uvp_xxxxxxxx
     export UVP_SECRET_KEY=xxxxxxxx
     export UVP_AUDIENCE=uvp-xxxxxxxx
-    python3 sdk/python/demo_devices.py
+    python3 python/demo_devices.py
 """
 
 from __future__ import annotations

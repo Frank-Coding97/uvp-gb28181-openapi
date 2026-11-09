@@ -1,6 +1,6 @@
 // 对接示例 + 签名自测。
 //
-//	cd sdk/go
+//	cd go
 //	go run ./cmd/demo --self-test    # 不需要网络，用仓库里的向量自证签名正确
 //
 //	go run ./cmd/demo                # 真连平台（需要下面四个环境变量）
@@ -176,7 +176,7 @@ func locateFixture() (string, error) {
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
-			return "", fmt.Errorf("找不到 fixtures/signature-v1.json；请在 sdk/ 或 sdk/go/ 目录下运行")
+			return "", fmt.Errorf("找不到 fixtures/signature-v1.json；请在仓库根或 go/ 目录下运行")
 		}
 		current = parent
 	}

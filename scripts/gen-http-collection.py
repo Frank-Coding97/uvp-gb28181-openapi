@@ -11,12 +11,12 @@
     脚本，保证每次请求都自动签名 —— 客户不需要手算，也就不会算错。
 
 产物：
-    sdk/http/uvp-openapi.postman_collection.json
-    sdk/http/uvp-openapi.postman_environment.json
-    sdk/http/uvp-openapi.apifox.json
+    http/uvp-openapi.postman_collection.json
+    http/uvp-openapi.postman_environment.json
+    http/uvp-openapi.apifox.json
 
-    python3 sdk/scripts/gen-http-collection.py
-    python3 sdk/scripts/gen-http-collection.py --check   # 只校验能否解析，不写文件
+    python3 scripts/gen-http-collection.py
+    python3 scripts/gen-http-collection.py --check   # 只校验能否解析，不写文件
 """
 
 from __future__ import annotations
@@ -33,14 +33,13 @@ try:
 except ImportError:  # pragma: no cover
     sys.exit("需要 PyYAML：pip install pyyaml")
 
-SDK_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO_ROOT = os.path.dirname(SDK_ROOT)
-OUT_DIR = os.path.join(SDK_ROOT, "http")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT_DIR = os.path.join(REPO_ROOT, "http")
 
 # 拆仓后契约副本会在 SDK 仓内，所以两个位置都要找
 SPEC_CANDIDATES = [
+    os.path.join(REPO_ROOT, "contract", "openapi-v1.yaml"),
     os.path.join(REPO_ROOT, "api", "openapi-v1.yaml"),
-    os.path.join(SDK_ROOT, "contract", "openapi-v1.yaml"),
 ]
 
 METHODS = ("get", "post", "put", "patch", "delete", "head")
@@ -106,7 +105,7 @@ GROUP_ORDER = [
 SCRIPT = r"""/*
  * UVP OpenAPI v1 请求签名器（collection 级 pre-request 脚本）
  *
- * 由 sdk/scripts/gen-http-collection.py 生成，请勿手改 —— 改生成器再重跑。
+ * 由 scripts/gen-http-collection.py 生成，请勿手改 —— 改生成器再重跑。
  * 规范来源：api/openapi-v1.yaml 的 x-uvp-signature-contract
  *
  * 它只做三件事，但这三件恰恰是手写最容易错的地方：

@@ -5,7 +5,7 @@
 算得出来，只是平台一律 401。这种错误从现象上完全反推不出来，只能靠
 同一份向量对账。
 
-    python3 sdk/python/selftest.py
+    python3 python/selftest.py
 """
 
 from __future__ import annotations

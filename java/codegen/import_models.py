@@ -12,7 +12,7 @@ Everything else is left exactly as generated. Running this script is safe and id
 result is committed so SDK consumers never need a JDK-based generator.
 
 Usage:
-    python3 sdk/java/codegen/import_models.py [--jar path/to/openapi-generator-cli.jar]
+    python3 java/codegen/import_models.py [--jar path/to/openapi-generator-cli.jar]
 """
 
 from __future__ import annotations
@@ -32,12 +32,12 @@ import yaml
 
 import yaml
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-SPEC = os.path.join(REPO_ROOT, "api", "openapi-v1.yaml")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+SPEC = os.path.join(REPO_ROOT, "contract", "openapi-v1.yaml")
 MODEL_DIR = os.path.join(
-    REPO_ROOT, "sdk", "java", "uvp-openapi-sdk", "src", "main", "java", "com", "uvp", "openapi", "model"
+    REPO_ROOT, "java", "uvp-openapi-sdk", "src", "main", "java", "com", "uvp", "openapi", "model"
 )
-CACHE_DIR = os.path.join(REPO_ROOT, "sdk", "java", ".cache")
+CACHE_DIR = os.path.join(REPO_ROOT, "java", ".cache")
 GENERATOR_VERSION = "7.10.0"
 GENERATOR_URL = ("https://repo1.maven.org/maven2/org/openapitools/openapi-generator-cli/"
                  "%s/openapi-generator-cli-%s.jar" % (GENERATOR_VERSION, GENERATOR_VERSION))

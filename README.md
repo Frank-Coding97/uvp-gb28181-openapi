@@ -256,8 +256,8 @@ python3 scripts/verify-parity.py --with-java # 再加 Java
 
 ## 契约与版本
 
-- 接口契约：`api/openapi-v1.yaml`（OpenAPI 3.0.3，84 个操作）。可以拿它自己生成其他语言客户端。
-- 签名向量：[`fixtures/signature-v1.json`](fixtures/signature-v1.json)，来源与同步方式见 [`fixtures/SOURCE.md`](fixtures/SOURCE.md)。
+- 接口契约：[`contract/openapi-v1.yaml`](contract/openapi-v1.yaml)（OpenAPI 3.0.3，84 个操作）。可以拿它自己生成其他语言客户端。
+- 签名向量：[`fixtures/signature-v1.json`](fixtures/signature-v1.json)，两份副本的来源与同步方式见 [`contract/SOURCE.md`](contract/SOURCE.md)。
 - 多语言一致性：`scripts/verify-parity.py`。任何一门语言的签名实现改动后都必须跑，且结果必须全绿。
 - HTTP 集合：[`http/`](http/)，由契约生成，不要手改。
 
@@ -274,15 +274,18 @@ python3 scripts/verify-parity.py --with-java # 再加 Java
 文档或注释里（`verify-parity.py` 每次都会先跑这一项）。内网 Nexus 这类确实要给客户的
 地址走脚本里的白名单，并写清理由。
 
-**契约变了（主仓 `api/openapi-v1.yaml`）**：
+**契约变了（平台仓 `api/openapi-v1.yaml`）**：
 
 ```bash
-python3 scripts/sync-fixture.py                      # 重新同步向量（主仓内执行）
+python3 scripts/sync-contract.py                     # 把契约与向量同步到本仓
 python3 java/codegen/import_models.py                # 重建模型
 python3 java/codegen/generate_apis.py                # 重建 API 类
 python3 scripts/gen-http-collection.py               # 重建 Postman / Apifox 集合
-python3 scripts/verify-parity.py --with-java         # 三语言 + 集合对账
+python3 scripts/verify-parity.py --with-java         # 三语言 + 集合 + 副本对账
 ```
+
+`sync-contract.py` 只有平台侧的人能跑（它要去平台仓取文件）。客户拿到的是已经同步好的副本，
+不需要跑，也跑不了。
 
 **改 `http/` 里的东西**：那三个 JSON 是生成出来的，手改会在下次重新生成时丢掉。
 改 `scripts/gen-http-collection.py` 再重跑。集合里的签名脚本同样如此——

@@ -5,7 +5,7 @@
 内网 Nexus、联调平台 IP，会跟着源码一起交付出去——既是信息泄露，
 也会让客户照着抄一个打不通的地址。
 
-    python3 sdk/scripts/check-no-endpoints.py
+    python3 scripts/check-no-endpoints.py
 
 退出码：0 干净 / 1 发现可疑地址
 """

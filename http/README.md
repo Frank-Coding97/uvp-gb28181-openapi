@@ -97,8 +97,8 @@ Postman：点集合名 → `Variables` 标签。Apifox：`环境管理` 里加�
 ## 六、契约变了要重新生成
 
 ```bash
-python3 sdk/scripts/gen-http-collection.py     # 重新生成三个文件
-node   sdk/scripts/verify-http-collection.js   # 验证脚本签名仍与夹具一致
+python3 scripts/gen-http-collection.py     # 重新生成三个文件
+node   scripts/verify-http-collection.js   # 验证脚本签名仍与夹具一致
 ```
 
 不要手改生成出来的 JSON —— 改了会在下次重新生成时丢掉，而且别人不知道。
@@ -107,7 +107,7 @@ node   sdk/scripts/verify-http-collection.js   # 验证脚本签名仍与夹具�
 会被直接测出来：
 
 ```bash
-python3 sdk/scripts/verify-parity.py
+python3 scripts/verify-parity.py
 ```
 
 ---

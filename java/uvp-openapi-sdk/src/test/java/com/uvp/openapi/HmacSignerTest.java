@@ -21,19 +21,16 @@ import org.junit.jupiter.api.Test;
 /**
  * Verifies the client signer against the golden vectors every SDK language shares.
  *
- * <p>The vectors live in {@code sdk/fixtures/signature-v1.json} so that Java, Python and Go all read
- * the same bytes. The server tree path stays as a fallback for checkouts where the fixture has not
- * been materialised yet. A copy only stays honest when something compares it with the source of
- * truth: {@code sdk/scripts/verify-parity.py} does that, and {@code fixtureCopyMatchesServerOriginal}
- * asserts it from inside the build whenever the server tree happens to be present.</p>
+ * <p>The vectors live in {@code fixtures/signature-v1.json} so that Java, Python and Go all read
+ * the same bytes. A shared copy only stays honest when something compares it with the platform:
+ * {@code scripts/verify-parity.py} does that against {@code contract/openapi-v1.yaml} and, when the
+ * platform repository happens to sit next to this one, against the server's own fixture.</p>
  */
 class HmacSignerTest {
 
-    /** SDK-owned copy first (works after the SDK is split out), then the historical server path. */
+    /** This repository is the source of truth for its own fixture. */
     private static final String[] FIXTURE_CANDIDATES = {
         "fixtures/signature-v1.json",
-        "sdk/fixtures/signature-v1.json",
-        "server/app/openapi/auth/testdata/signature-v1.json",
     };
 
     private static JsonObject fixture;
@@ -59,25 +56,6 @@ class HmacSignerTest {
         }
         throw new IllegalStateException("cannot find fixtures/signature-v1.json above "
                 + System.getProperty("user.dir") + "; run the tests from inside the SDK repository");
-    }
-
-    @Test
-    void fixtureCopyMatchesServerOriginal() throws IOException {
-        Path serverOriginal = null;
-        Path current = Paths.get(System.getProperty("user.dir")).toAbsolutePath();
-        while (current != null) {
-            Path candidate = current.resolve("server/app/openapi/auth/testdata/signature-v1.json");
-            if (Files.exists(candidate)) {
-                serverOriginal = candidate;
-                break;
-            }
-            current = current.getParent();
-        }
-        // Standalone SDK checkout has no server tree; the parity script owns that case.
-        org.junit.jupiter.api.Assumptions.assumeTrue(serverOriginal != null);
-        assertEquals(new String(Files.readAllBytes(serverOriginal), StandardCharsets.UTF_8),
-                new String(Files.readAllBytes(fixturePath), StandardCharsets.UTF_8),
-                "sdk/fixtures 与主仓 testdata 不一致：先跑 sdk/scripts/sync-fixture.py");
     }
 
     @Test

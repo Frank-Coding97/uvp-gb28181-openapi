@@ -131,11 +131,11 @@ try {
 
 ## 重新生成
 
-规范在 `api/openapi-v1.yaml`，改完后：
+规范在 `contract/openapi-v1.yaml`，改完后：
 
 ```bash
-python3 sdk/java/codegen/import_models.py    # 重建模型层
-python3 sdk/java/codegen/generate_apis.py    # 重建 8 个 API 类
+python3 java/codegen/import_models.py    # 重建模型层
+python3 java/codegen/generate_apis.py    # 重建 8 个 API 类
 ```
 
 生成结果需要提交到仓库，SDK 使用者不需要有 JDK 或生成器。
@@ -143,15 +143,14 @@ python3 sdk/java/codegen/generate_apis.py    # 重建 8 个 API 类
 ## 构建与测试
 
 ```bash
-cd sdk/java
+cd java
 mvn test          # 签名对账 + 请求管线行为测试
 mvn install       # 产出 3 个 jar
 ```
 
-签名测试读取 `sdk/fixtures/signature-v1.json` —— 这份向量被 Java / Python / Go 三份实现共用。
-它本身是主仓 `server/app/openapi/auth/testdata/signature-v1.json` 的副本，
-`sdk/scripts/verify-parity.py` 负责副本与原件对账（在主仓内跑 `mvn test` 时也会断言一次），
-所以副本不会静默漂移，SDK 拆出去单独交付时也不用再依赖服务端源码。
+签名测试读取 `fixtures/signature-v1.json` —— 这份向量被 Java / Python / Go 三份实现共用。
+它和 `contract/openapi-v1.yaml` 都是平台仓库的副本，`scripts/verify-parity.py` 负责
+字节级对账（旁边有平台仓库时才会跑），所以副本不会静默漂移。
 
 运行 demo：
 
@@ -175,7 +174,7 @@ curl 'http://localhost:8088/demo/devices'
 未设置 `UVP_IT_AK` 时自动跳过，所以 `mvn test` 永远不需要网络。
 
 ```bash
-cd sdk/java
+cd java
 export UVP_IT_BASE_URL=http://<平台IP>:51002
 export UVP_IT_AK=uvp_xxx
 export UVP_IT_SK=xxx

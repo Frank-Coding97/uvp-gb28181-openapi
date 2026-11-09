@@ -2937,7 +2937,7 @@
           "/*",
           " * UVP OpenAPI v1 请求签名器（collection 级 pre-request 脚本）",
           " *",
-          " * 由 sdk/scripts/gen-http-collection.py 生成，请勿手改 —— 改生成器再重跑。",
+          " * 由 scripts/gen-http-collection.py 生成，请勿手改 —— 改生成器再重跑。",
           " * 规范来源：api/openapi-v1.yaml 的 x-uvp-signature-contract",
           " *",
           " * 它只做三件事，但这三件恰恰是手写最容易错的地方：",

@@ -1,5 +1,5 @@
 // GENERATED FILE - DO NOT EDIT.
-// Source: api/openapi-v1.yaml via sdk/java/codegen/generate_apis.py
+// Source: contract/openapi-v1.yaml via java/codegen/generate_apis.py
 package com.uvp.openapi.api;
 
 import com.uvp.openapi.internal.ApiInvoker;

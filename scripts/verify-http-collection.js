@@ -9,7 +9,7 @@
  *   喂夹具向量，比对签名 —— 验的是要交付出去的东西，不是复刻一份逻辑。
  *
  * 用法：
- *   node sdk/scripts/verify-http-collection.js
+ *   node scripts/verify-http-collection.js
  *
  * 退出码：0 全部通过 / 1 有失败
  */
@@ -21,11 +21,11 @@ const path = require('path');
 const vm = require('vm');
 const crypto = require('crypto');
 
-const SDK_ROOT = path.dirname(__dirname);
-const HTTP_DIR = path.join(SDK_ROOT, 'http');
+const REPO_ROOT = path.dirname(__dirname);
+const HTTP_DIR = path.join(REPO_ROOT, 'http');
 const COLLECTION = path.join(HTTP_DIR, 'uvp-openapi.postman_collection.json');
 const APIFOX = path.join(HTTP_DIR, 'uvp-openapi.apifox.json');
-const FIXTURE = path.join(SDK_ROOT, 'fixtures', 'signature-v1.json');
+const FIXTURE = path.join(REPO_ROOT, 'fixtures', 'signature-v1.json');
 
 const SIGNATURE_HEADERS = [
   'X-UVP-Sign-Version',
@@ -282,7 +282,7 @@ function flatten(items, out) {
 
 function main() {
   if (!fs.existsSync(COLLECTION)) {
-    console.error('找不到 ' + COLLECTION + '，先跑 python3 sdk/scripts/gen-http-collection.py');
+    console.error('找不到 ' + COLLECTION + '，先跑 python3 scripts/gen-http-collection.py');
     process.exit(1);
   }
   if (!fs.existsSync(FIXTURE)) {
@@ -294,7 +294,7 @@ function main() {
   const fixture = JSON.parse(fs.readFileSync(FIXTURE, 'utf8'));
   const script = extractPostmanScript(collection);
 
-  console.log('集合: ' + path.relative(SDK_ROOT, COLLECTION));
+  console.log('集合: ' + path.relative(REPO_ROOT, COLLECTION));
   console.log('脚本: ' + script.split('\n').length + ' 行\n');
 
   /* 1. 用夹具向量验签：这是"脚本真的算得对"的唯一证据 */
